@@ -15,12 +15,6 @@ const zlox = struct {
 const Chunk = zlox.Chunk;
 const OpCode = zlox.OpCode;
 const VM = zlox.VM;
-// const chunks = @import("chunk.zig");
-// const debug = @import("debug.zig");
-// const VM = @import("vm.zig").VM;
-// const Chunk = chunks.Chunk;
-// const OpCode = chunks.OpCode;
-
 const log = zlox.log;
 
 pub fn main() !u8 {
