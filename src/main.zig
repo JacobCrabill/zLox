@@ -1,38 +1,90 @@
 const std = @import("std");
-const chunks = @import("chunk.zig");
 
-const Chunk = chunks.Chunk;
-const OpCode = chunks.OpCode;
-const Debug = @import("debug.zig");
-
+const Allocator = std.mem.Allocator;
+const File = std.fs.File;
 const GPA = std.heap.GeneralPurposeAllocator(.{});
+const os = std.os;
 
-const log = Debug.log;
+const zlox = struct {
+    usingnamespace @import("chunk.zig");
+    usingnamespace @import("debug.zig");
+    usingnamespace @import("vm.zig");
+    usingnamespace @import("repl.zig");
+};
+
+const Chunk = zlox.Chunk;
+const OpCode = zlox.OpCode;
+const VM = zlox.VM;
+// const chunks = @import("chunk.zig");
+// const debug = @import("debug.zig");
+// const VM = @import("vm.zig").VM;
+// const Chunk = chunks.Chunk;
+// const OpCode = chunks.OpCode;
+
+const log = zlox.log;
 
 pub fn main() !u8 {
     var gpa = GPA{};
     var alloc = gpa.allocator();
 
+    var args = try std.process.argsAlloc(alloc);
+
+    if (args.len > 2) {
+        log.err("Usage: {s} [file]", .{args[0]});
+        return 65;
+    } else if (args.len == 2) {
+        try runFile(args[1], alloc);
+    } else {
+        var repl = zlox.makeRepl(alloc, std.io.getStdIn().reader(), std.io.getStdOut().writer());
+        try repl.start();
+    }
+
+    return 0;
+}
+
+fn runFile(path: []const u8, alloc: Allocator) !void {
+    // Read file into memory
+    var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var realpath = try std.fs.realpath(path, &path_buf);
+    var lox_file: File = try std.fs.openFileAbsolute(realpath, .{});
+    var lox_text = try lox_file.readToEndAlloc(alloc, 1e9);
+
+    var vm = VM.init(alloc);
+    _ = vm.interpret(lox_text);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
+test "basic ops" {
+    var alloc = std.testing.allocator;
+    var vm = VM.init(alloc);
     var chunk = Chunk.init(alloc);
     defer chunk.deinit();
 
-    const constant: u8 = chunk.addConstant(.{ .value = 1.2 });
-    try chunk.writeChunk(OpCode.OP_CONSTANT.byte(), 123);
-    try chunk.writeChunk(constant, 123);
+    const line: usize = 123;
+    var constant: u8 = chunk.addConstant(.{ .value = 1.2 });
+    try chunk.writeChunk(OpCode.OP_CONSTANT.byte(), line);
+    try chunk.writeChunk(constant, line);
 
-    try chunk.writeChunk(OpCode.OP_RETURN.byte(), 123);
-    Debug.disassembleChunk(&chunk, "test chunk");
+    constant = chunk.addConstant(.{ .value = 3.4 });
+    try chunk.writeChunk(OpCode.OP_CONSTANT.byte(), line);
+    try chunk.writeChunk(constant, line);
 
-    // var args = std.process.argsAlloc(alloc);
+    try chunk.writeChunk(OpCode.OP_ADD.byte(), line);
 
-    // if (args.len > 2) {
-    //     log.err("Usage: {s} [file]", .{args[0]});
-    //     return 65;
-    // } else if (args.len == 1) {
-    //     // runFile(args[1]);
-    // } else {
-    //     // repl()
-    // }
+    constant = chunk.addConstant(.{ .value = 5.6 });
+    try chunk.writeChunk(OpCode.OP_CONSTANT.byte(), line);
+    try chunk.writeChunk(constant, line);
 
-    return 0;
+    try chunk.writeChunk(OpCode.OP_DIVIDE.byte(), line);
+    try chunk.writeChunk(OpCode.OP_NEGATE.byte(), line);
+
+    try chunk.writeChunk(OpCode.OP_RETURN.byte(), line);
+    zlox.disassembleChunk(&chunk, "test chunk");
+
+    const res = vm.interpret(&chunk);
+    log.info("result {any}", .{res});
+    std.testing.expectEqual(zlox.InterpretResult.OK, res);
 }

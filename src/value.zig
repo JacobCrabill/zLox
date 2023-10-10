@@ -1,3 +1,3 @@
 pub const Value = struct {
-    value: f64,
+    value: f64 = 0,
 };
