@@ -23,9 +23,11 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     std.debug.print("{d:0>4} ", .{offset});
     if (offset > 0 and chunk.lines.items[offset] == chunk.lines.items[offset - 1]) {
         std.debug.print("   | ", .{});
-    } else {
+    } else if (chunk.lines.items.len > 0) {
         std.debug.print("{d:>4} ", .{chunk.lines.items[offset]});
     }
+
+    std.debug.assert(chunk.code.items.len > 0);
 
     const op: OpCode = chunk.code.items[offset];
     switch (op) {

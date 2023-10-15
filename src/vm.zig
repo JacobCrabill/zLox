@@ -8,13 +8,13 @@ const zlox = struct {
     usingnamespace @import("compiler.zig");
 };
 
-const Value = zlox.Value;
-
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
 const Chunk = zlox.Chunk;
+const Compiler = zlox.Compiler;
 const OpCode = zlox.OpCode;
+const Value = zlox.Value;
 
 pub const InterpretResult = enum(u8) {
     OK,
@@ -56,9 +56,16 @@ pub const VM = struct {
     }
 
     pub fn interpret(vm: *VM, input: []const u8) InterpretResult {
-        _ = vm;
-        zlox.compile(input) catch return .COMPILE_ERROR;
-        return .OK;
+        var chunk = Chunk.init(vm.alloc);
+        defer chunk.deinit();
+
+        var compiler = Compiler.init(vm.alloc);
+        compiler.compile(input, &chunk) catch return .COMPILE_ERROR;
+
+        vm.chunk = &chunk;
+        vm.ip = 0;
+
+        return vm.run();
     }
 
     pub fn push(vm: *VM, value: Value) void {
