@@ -1,8 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const zlox = struct {
     usingnamespace @import("lexer.zig");
     usingnamespace @import("chunk.zig");
+    usingnamespace @import("debug.zig");
     usingnamespace @import("tokens.zig");
     usingnamespace @import("value.zig");
 };
@@ -142,11 +144,14 @@ pub const Compiler = struct {
 
     fn endCompiler(self: *Self) void {
         self.emitReturn();
+        if (builtin.mode == .Debug and !self.hadError) {
+            zlox.disassembleChunk(self.chunk, "code");
+        }
     }
 
     fn binary(self: *Self) void {
         const optype: TokenType = self.previous.kind;
-        var rule: ParseRule = self.getRule(optype);
+        var rule: ParseRule = getParseRule(optype);
         self.parsePrecedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
 
         switch (optype) {
@@ -154,7 +159,22 @@ pub const Compiler = struct {
             .MINUS => self.emitByte(OpCode.OP_SUBTRACT.byte()),
             .STAR => self.emitByte(OpCode.OP_MULTIPLY.byte()),
             .SLASH => self.emitByte(OpCode.OP_DIVIDE.byte()),
+            .BANG_EQUAL => self.emitBytes(OpCode.OP_EQUAL.byte(), OpCode.OP_NOT.byte()),
+            .EQUAL_EQUAL => self.emitByte(OpCode.OP_EQUAL.byte()),
+            .GREATER => self.emitByte(OpCode.OP_GREATER.byte()),
+            .GREATER_EQUAL => self.emitBytes(OpCode.OP_LESS.byte(), OpCode.OP_NOT.byte()),
+            .LESS => self.emitByte(OpCode.OP_LESS.byte()),
+            .LESS_EQUAL => self.emitBytes(OpCode.OP_GREATER.byte(), OpCode.OP_NOT.byte()),
             else => return,
+        }
+    }
+
+    fn literal(self: *Self) void {
+        switch (self.previous.kind) {
+            .TRUE => self.emitByte(OpCode.OP_TRUE.byte()),
+            .FALSE => self.emitByte(OpCode.OP_FALSE.byte()),
+            .NIL => self.emitByte(OpCode.OP_NIL.byte()),
+            else => {},
         }
     }
 
@@ -165,7 +185,7 @@ pub const Compiler = struct {
 
     pub fn number(self: *Self) void {
         const value: f64 = std.fmt.parseFloat(f64, self.previous.lexeme) catch 0;
-        self.emitConstant(Value{ .value = value });
+        self.emitConstant(Value{ .number = value });
     }
 
     fn unary(self: *Self) void {
@@ -175,6 +195,7 @@ pub const Compiler = struct {
 
         switch (optype) {
             .MINUS => self.emitByte(OpCode.OP_NEGATE.byte()),
+            .BANG => self.emitByte(OpCode.OP_NOT.byte()),
             else => return,
         }
     }
@@ -187,34 +208,21 @@ pub const Compiler = struct {
         }
     }
 
-    fn getRule(self: *Self, kind: TokenType) ParseRule {
-        _ = self;
-        return switch (kind) {
-            .LEFT_PAREN => ParseRule.init(Compiler.grouping, null, .NONE),
-            .MINUS => ParseRule.init(Compiler.unary, Compiler.binary, .TERM),
-            .PLUS => ParseRule.init(null, Compiler.binary, .TERM),
-            .SLASH => ParseRule.init(null, Compiler.binary, .FACTOR),
-            .STAR => ParseRule.init(null, Compiler.binary, .FACTOR),
-            .NUMBER => ParseRule.init(Compiler.number, null, .NONE),
-            else => .{},
-        };
-        // .MINUS => .{ .prefix = self.unary, .infix = self.binary, .precedence = .TERM },
-        // .PLUS => .{ .prefix = null, .infix = self.binary, .precedence = .TERM },
-        // .SLASH => .{ .prefix = null, .infix = self.binary, .precedence = .FACTOR },
-        // .STAR => .{ .prefix = null, .infix = self.binary, .precedence = .FACTOR },
-        // .NUMBER => .{ .prefix = self.number, .infix = null, .precedence = .NONE },
-
-    }
-
     fn parsePrecedence(self: *Self, prec: Precedence) void {
         self.advance();
-        if (self.getRule(self.previous.kind).prefix) |*prefixRule| {
+        if (getParseRule(self.previous.kind).prefix) |*prefixRule| {
             prefixRule.*(self);
         } else {
-            self.errorMsg("Expected expression");
+            self.errorMsg("Invalid expression");
             return;
         }
-        _ = prec;
+
+        while (@intFromEnum(prec) <= @intFromEnum(getParseRule(self.current.kind).precedence)) {
+            self.advance();
+            if (getParseRule(self.previous.kind).infix) |infixRule| {
+                infixRule(self);
+            }
+        }
     }
 
     fn expression(self: *Self) void {
@@ -248,3 +256,29 @@ pub const Compiler = struct {
         self.errorAt(&self.previous, msg);
     }
 };
+
+/// Get the Pratt parser rule for the given TokenType
+///
+/// The default rule for unhandled token types contains null
+/// infix and prefix functions, with a precedence of NONE
+fn getParseRule(kind: TokenType) ParseRule {
+    return switch (kind) {
+        .LEFT_PAREN => ParseRule.init(Compiler.grouping, null, .NONE),
+        .MINUS => ParseRule.init(Compiler.unary, Compiler.binary, .TERM),
+        .PLUS => ParseRule.init(null, Compiler.binary, .TERM),
+        .SLASH => ParseRule.init(null, Compiler.binary, .FACTOR),
+        .STAR => ParseRule.init(null, Compiler.binary, .FACTOR),
+        .BANG => ParseRule.init(Compiler.unary, null, .NONE),
+        .BANG_EQUAL => ParseRule.init(null, Compiler.binary, .EQUALITY),
+        .NUMBER => ParseRule.init(Compiler.number, null, .NONE),
+        .TRUE => ParseRule.init(Compiler.literal, null, .NONE),
+        .FALSE => ParseRule.init(Compiler.literal, null, .NONE),
+        .NIL => ParseRule.init(Compiler.literal, null, .NONE),
+        .EQUAL_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
+        .GREATER => ParseRule.init(null, Compiler.binary, .COMPARISON),
+        .GREATER_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
+        .LESS => ParseRule.init(null, Compiler.binary, .COMPARISON),
+        .LESS_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
+        else => .{},
+    };
+}

@@ -39,6 +39,7 @@ pub const Lexer = struct {
 
         const c: u8 = self.advance();
         return switch (c) {
+            0 => self.makeToken(.EOF),
             '(' => self.makeToken(.LEFT_PAREN),
             ')' => self.makeToken(.RIGHT_PAREN),
             '{' => self.makeToken(.LEFT_BRACE),
@@ -87,11 +88,12 @@ pub const Lexer = struct {
     }
 
     fn peek(self: Lexer) u8 {
+        if (self.isAtEnd()) return 0;
         return self.input[self.current];
     }
 
     fn peekNext(self: Lexer) u8 {
-        if (self.isAtEnd()) return 0;
+        if (self.current >= self.input.len - 1) return 0;
         return self.input[self.current + 1];
     }
 

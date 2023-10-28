@@ -15,7 +15,11 @@ const Chunk = zlox.Chunk;
 const Compiler = zlox.Compiler;
 const OpCode = zlox.OpCode;
 const Value = zlox.Value;
+const NoneVal = zlox.NoneVal;
+const TrueVal = zlox.TrueVal;
+const FalseVal = zlox.FalseVal;
 
+/// TODO: Convert to std.error enum; use Zig error handling
 pub const InterpretResult = enum(u8) {
     OK,
     COMPILE_ERROR,
@@ -39,7 +43,7 @@ pub const VM = struct {
 
         // We can't have uninitialized values, so init the stack
         for (&vm.stack) |*val| {
-            val.* = Value{};
+            val.* = NoneVal;
         }
 
         vm.resetStack();
@@ -53,6 +57,13 @@ pub const VM = struct {
 
     pub fn resetStack(vm: *VM) void {
         vm.stackTop = 0;
+    }
+
+    pub fn runtimeError(vm: *VM, comptime fmt: []const u8, args: anytype) void {
+        std.debug.print(fmt, args);
+        const line: usize = vm.chunk.lines.items[vm.ip];
+        std.debug.print("[line {d}] in script\n", .{line});
+        vm.resetStack();
     }
 
     pub fn interpret(vm: *VM, input: []const u8) InterpretResult {
@@ -78,6 +89,10 @@ pub const VM = struct {
         return vm.stack[vm.stackTop];
     }
 
+    pub fn peek(vm: *VM, distance: usize) Value {
+        return vm.stack[vm.stackTop - 1 - distance];
+    }
+
     pub fn run(vm: *VM) InterpretResult {
         while (true) {
             if (builtin.mode == .Debug) {
@@ -91,31 +106,54 @@ pub const VM = struct {
                 std.debug.print("\n", .{});
             }
 
-            _ = zlox.disassembleInstruction(vm.chunk, vm.ip);
             const op = vm.readByte();
-            switch (op) {
-                .OP_CONSTANT => {
-                    const val = vm.readConstant();
-                    vm.push(val);
-                },
-                .OP_ADD => vm.binaryOp('+'),
-                .OP_SUBTRACT => vm.binaryOp('-'),
-                .OP_MULTIPLY => vm.binaryOp('*'),
-                .OP_DIVIDE => vm.binaryOp('/'),
-                .OP_NEGATE => {
-                    const val = vm.pop();
-                    vm.push(Value{ .value = -val.value });
-                },
-                .OP_RETURN => {
-                    zlox.printValue(vm.pop());
-                    std.debug.print("\n", .{});
-                    return .OK;
-                },
-                else => {
-                    return .RUNTIME_ERROR;
-                },
-            }
+            // TODO: Replace with Zig error enum; use try / catch
+            const res: InterpretResult = vm.interpretOp(op);
+            if (res != .OK or op == .OP_RETURN)
+                return res;
         }
+    }
+
+    fn interpretOp(vm: *VM, op: OpCode) InterpretResult {
+        switch (op) {
+            .OP_CONSTANT => {
+                const val = vm.readConstant();
+                vm.push(val);
+            },
+            .OP_NIL => vm.push(NoneVal),
+            .OP_TRUE => vm.push(TrueVal),
+            .OP_FALSE => vm.push(FalseVal),
+            .OP_EQUAL => {
+                const a = vm.pop();
+                const b = vm.pop();
+                vm.push(Value{ .bool = zlox.valuesEqual(a, b) });
+            },
+            .OP_GREATER => return vm.binaryOp('>'),
+            .OP_LESS => return vm.binaryOp('<'),
+            .OP_ADD => return vm.binaryOp('+'),
+            .OP_SUBTRACT => return vm.binaryOp('-'),
+            .OP_MULTIPLY => return vm.binaryOp('*'),
+            .OP_DIVIDE => return vm.binaryOp('/'),
+            .OP_NOT => vm.push(Value{ .bool = zlox.isFalsey(vm.pop()) }),
+            .OP_NEGATE => {
+                if (vm.peek(0) != .number) {
+                    vm.runtimeError("Operand must be a number", .{});
+                    return .RUNTIME_ERROR;
+                }
+                const val = vm.pop();
+                vm.push(Value{ .number = -val.number });
+            },
+            .OP_RETURN => {
+                zlox.printValue(vm.pop());
+                std.debug.print("\n", .{});
+                return .OK;
+            },
+            else => {
+                return .RUNTIME_ERROR;
+            },
+        }
+
+        return .OK;
     }
 
     fn readByte(vm: *VM) OpCode {
@@ -129,20 +167,28 @@ pub const VM = struct {
         return vm.chunk.constants.items[idx];
     }
 
-    fn binaryOp(vm: *VM, comptime op: u8) void {
-        const b: Value = vm.pop();
-        const a: Value = vm.pop();
-        vm.push(Value{
-            .value = switch (op) {
-                '+' => a.value + b.value,
-                '-' => a.value - b.value,
-                '*' => a.value * b.value,
-                '/' => a.value / b.value,
-                else => blk: {
-                    std.debug.print("ERROR: Invalid binary op: '{c}'\n", .{op});
-                    break :blk std.math.nan(f64);
-                },
+    fn binaryOp(vm: *VM, comptime op: u8) InterpretResult {
+        if (vm.peek(0) != .number or vm.peek(1) != .number) {
+            vm.runtimeError("Binary operands must be numbers", .{});
+            return .RUNTIME_ERROR;
+        }
+
+        const b: f64 = vm.pop().number;
+        const a: f64 = vm.pop().number;
+
+        switch (op) {
+            '+' => vm.push(Value{ .number = a + b }),
+            '-' => vm.push(Value{ .number = a - b }),
+            '*' => vm.push(Value{ .number = a * b }),
+            '/' => vm.push(Value{ .number = a / b }),
+            '>' => vm.push(Value{ .bool = a > b }),
+            '<' => vm.push(Value{ .bool = a < b }),
+            else => {
+                std.debug.print("ERROR: Invalid binary op: '{c}'\n", .{op});
+                vm.push(Value{ .number = std.math.nan(f64) });
             },
-        });
+        }
+
+        return .OK;
     }
 };
