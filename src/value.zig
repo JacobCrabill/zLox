@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Allocator = std.mem.Allocator;
+
 pub const ValueType = enum(u8) {
     bool,
     none,
@@ -16,10 +18,23 @@ pub const Value = union(ValueType) {
     none: void,
     number: f64,
     object: Object,
+
+    pub fn deinit(value: *Value, alloc: Allocator) void {
+        switch (value.*) {
+            .object => |*obj| obj.deinit(alloc),
+            else => {},
+        }
+    }
 };
 
 pub const Object = union(ObjectType) {
     string: []const u8,
+
+    pub fn deinit(obj: *Object, alloc: Allocator) void {
+        switch (obj.*) {
+            .string => alloc.free(obj.string),
+        }
+    }
 };
 
 pub const NoneVal: Value = Value{ .none = {} };
@@ -40,6 +55,11 @@ pub fn isFalsey(value: Value) bool {
         .bool => |b| !b,
         else => false,
     };
+}
+
+pub fn isString(value: Value) bool {
+    if (value != .object) return false;
+    return (value.object == .string);
 }
 
 pub fn valuesEqual(a: Value, b: Value) bool {

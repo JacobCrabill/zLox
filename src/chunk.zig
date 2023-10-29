@@ -46,8 +46,11 @@ pub const Chunk = struct {
 
     pub fn deinit(self: *Chunk) void {
         self.code.deinit();
-        self.constants.deinit();
         self.lines.deinit();
+        for (self.constants.items) |*value| {
+            value.deinit(self.alloc);
+        }
+        self.constants.deinit();
         self.* = undefined;
     }
 

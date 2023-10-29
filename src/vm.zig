@@ -29,16 +29,18 @@ pub const InterpretResult = enum(u8) {
 pub const VM = struct {
     pub const STACK_MAX: u32 = 256;
     alloc: Allocator,
-    chunk: *const Chunk,
+    chunk: *Chunk,
     ip: usize,
     stack: [STACK_MAX]Value = undefined,
     stackTop: usize = 0,
+    heapValues: ArrayList(Value), // All heap allocs owned by the VM
 
     pub fn init(alloc: Allocator) VM {
         var vm = VM{
             .alloc = alloc,
             .chunk = undefined,
             .ip = 0,
+            .heapValues = ArrayList(Value).init(alloc),
         };
 
         // We can't have uninitialized values, so init the stack
@@ -52,7 +54,11 @@ pub const VM = struct {
     }
 
     pub fn deinit(vm: *VM) void {
-        _ = vm;
+        // note: vm.chunk handled within interpret()
+        for (vm.heapValues.items) |*value| {
+            value.deinit(vm.alloc);
+        }
+        vm.heapValues.deinit();
     }
 
     pub fn resetStack(vm: *VM) void {
@@ -111,7 +117,7 @@ pub const VM = struct {
         switch (op) {
             .OP_CONSTANT => {
                 const val = vm.readConstant();
-                vm.push(val);
+                vm.push(val); // TODO: Duplicate!!
             },
             .OP_NIL => vm.push(NoneVal),
             .OP_TRUE => vm.push(TrueVal),
@@ -161,28 +167,55 @@ pub const VM = struct {
     }
 
     fn binaryOp(vm: *VM, comptime op: u8) InterpretResult {
-        if (vm.peek(0) != .number or vm.peek(1) != .number) {
-            vm.runtimeError("Binary operands must be numbers", .{});
+        if (zlox.isString(vm.peek(0)) and zlox.isString(vm.peek(1))) {
+            if (op != '+') {
+                vm.runtimeError("Invalid binary operator for strings: '{c}'", .{op});
+                return .RUNTIME_ERROR;
+            }
+
+            vm.concatenate() catch {
+                return .RUNTIME_ERROR;
+            };
+        } else if (vm.peek(0) == .number and vm.peek(1) == .number) {
+            // Handle normal number binary operators
+            const b: f64 = vm.pop().number;
+            const a: f64 = vm.pop().number;
+
+            switch (op) {
+                '+' => vm.push(Value{ .number = a + b }),
+                '-' => vm.push(Value{ .number = a - b }),
+                '*' => vm.push(Value{ .number = a * b }),
+                '/' => vm.push(Value{ .number = a / b }),
+                '>' => vm.push(Value{ .bool = a > b }),
+                '<' => vm.push(Value{ .bool = a < b }),
+                else => {
+                    vm.run("ERROR: Invalid binary op: '{c}'\n", .{op});
+                    vm.push(Value{ .number = std.math.nan(f64) });
+                },
+            }
+        } else {
+            vm.runtimeError("Binary operands must be two numbers or strings", .{});
             return .RUNTIME_ERROR;
         }
 
-        const b: f64 = vm.pop().number;
-        const a: f64 = vm.pop().number;
-
-        switch (op) {
-            '+' => vm.push(Value{ .number = a + b }),
-            '-' => vm.push(Value{ .number = a - b }),
-            '*' => vm.push(Value{ .number = a * b }),
-            '/' => vm.push(Value{ .number = a / b }),
-            '>' => vm.push(Value{ .bool = a > b }),
-            '<' => vm.push(Value{ .bool = a < b }),
-            else => {
-                std.debug.print("ERROR: Invalid binary op: '{c}'\n", .{op});
-                vm.push(Value{ .number = std.math.nan(f64) });
-            },
-        }
-
         return .OK;
+    }
+
+    /// Concatenate two strings on top of the stack
+    fn concatenate(vm: *VM) !void {
+        var val_b = vm.pop();
+        var val_a = vm.pop();
+
+        const b: []const u8 = val_b.object.string;
+        const a: []const u8 = val_a.object.string;
+        const c = try std.mem.concat(vm.alloc, u8, &[_][]const u8{ a, b });
+
+        // Because we allocated memory outside the Chunk,
+        // add it to our array of owned heap allocations
+        const str = Value{ .object = .{ .string = c } };
+        try vm.heapValues.append(str);
+
+        vm.push(str);
     }
 
     fn printStack(vm: *VM) void {

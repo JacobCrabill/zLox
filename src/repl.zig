@@ -53,9 +53,7 @@ pub fn Repl(comptime InStream: type, comptime OutStream: type) type {
 
             while (!self.should_exit) {
                 try self.output.print(">> ", .{});
-                const raw_input = (try self.nextLine()).?;
-                var input: []u8 = try self.alloc.alloc(u8, raw_input.len);
-                @memcpy(input, raw_input);
+                const input = (try self.nextLine()).?;
                 try self.commands.append(input);
 
                 // Check for special commands handled by the REPL
@@ -79,6 +77,7 @@ pub fn Repl(comptime InStream: type, comptime OutStream: type) type {
         }
 
         fn nextLine(self: *Self) !?[]const u8 {
+            // TODO: deprecated: replace with an ArrayList writer
             var line = (try self.input.readUntilDelimiterOrEofAlloc(
                 self.alloc,
                 '\n',

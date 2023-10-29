@@ -10,7 +10,6 @@ const zlox = struct {
 };
 
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
 
 const Lexer = zlox.Lexer;
 const Chunk = zlox.Chunk;
@@ -69,7 +68,6 @@ pub const Compiler = struct {
 
     pub fn compile(self: *Self, input: []const u8, chunk: *Chunk) !void {
         self.lexer = Lexer.init(input);
-        // defer self.lexer.deinit();
 
         self.chunk = chunk;
         self.hadError = false;
@@ -189,6 +187,7 @@ pub const Compiler = struct {
     }
 
     pub fn string(self: *Self) void {
+        // Copy string out of input buffer to a buffer owned by the Object
         const str: []const u8 = self.alloc.dupe(u8, self.previous.lexeme[1 .. self.previous.lexeme.len - 1]) catch {
             self.errorMsg("Unable to copy string");
             return;

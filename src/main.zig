@@ -2,7 +2,11 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
-const GPA = std.heap.GeneralPurposeAllocator(.{});
+const GPA = std.heap.GeneralPurposeAllocator(.{
+    .stack_trace_frames = 10,
+    .never_unmap = true,
+    .retain_metadata = true,
+});
 const os = std.os;
 
 const zlox = struct {
@@ -20,8 +24,10 @@ const log = zlox.log;
 pub fn main() !u8 {
     var gpa = GPA{};
     var alloc = gpa.allocator();
+    defer _ = gpa.deinit(); // release all memory and check for leaks
 
     var args = try std.process.argsAlloc(alloc);
+    defer std.process.argsFree(alloc, args);
 
     if (args.len > 2) {
         log.err("Usage: {s} [file]", .{args[0]});
@@ -30,6 +36,7 @@ pub fn main() !u8 {
         try runFile(args[1], alloc);
     } else {
         var repl = zlox.makeRepl(alloc, std.io.getStdIn().reader(), std.io.getStdOut().writer());
+        defer repl.deinit();
         try repl.start();
     }
 

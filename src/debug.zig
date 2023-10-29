@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Value = @import("value.zig").Value;
+const Object = @import("value.zig").Object;
 
 pub const log = std.log.scoped(.zlox);
 
@@ -53,11 +54,17 @@ pub fn simpleInstruction(op: OpCode, offset: usize) usize {
     return offset + 1;
 }
 
+pub fn printObject(obj: Object) void {
+    switch (obj) {
+        .string => |s| std.debug.print("Obj.String: '{s}'", .{s}),
+    }
+}
+
 pub fn printValue(value: Value) void {
     switch (value) {
         .number => |num| std.debug.print("'{e}'", .{num}),
         .bool => |b| std.debug.print("'{}'", .{b}),
         .none => std.debug.print("'none'", .{}),
-        .object => |obj| std.debug.print("'{any}'", .{obj}),
+        .object => |obj| printObject(obj),
     }
 }
