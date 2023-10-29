@@ -40,11 +40,11 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
 pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
     const constant: u8 = @intFromEnum(chunk.code.items[offset + 1]);
     const value: Value = chunk.constants.items[constant];
-    switch (value) {
-        .number => |num| std.debug.print("{s:<16} {d:4} '{e}'\n", .{ @tagName(op), constant, num }),
-        .bool => |b| std.debug.print("{s:<16} {d:4} '{}'\n", .{ @tagName(op), constant, b }),
-        .none => std.debug.print("{s:<16} {d:4} 'none'\n", .{ @tagName(op), constant }),
-    }
+
+    std.debug.print("{s:<16} {d:4} ", .{ @tagName(op), constant });
+    printValue(value);
+    std.debug.print("\n", .{});
+
     return offset + 2;
 }
 
@@ -58,5 +58,6 @@ pub fn printValue(value: Value) void {
         .number => |num| std.debug.print("'{e}'", .{num}),
         .bool => |b| std.debug.print("'{}'", .{b}),
         .none => std.debug.print("'none'", .{}),
+        .object => |obj| std.debug.print("'{any}'", .{obj}),
     }
 }

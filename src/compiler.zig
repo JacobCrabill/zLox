@@ -18,6 +18,7 @@ const OpCode = zlox.OpCode;
 const Token = zlox.Token;
 const TokenType = zlox.TokenType;
 const Value = zlox.Value;
+const Object = zlox.Object;
 
 // zig fmt: off
 pub const Precedence = enum(u8) {
@@ -78,7 +79,6 @@ pub const Compiler = struct {
         self.expression();
 
         while (self.lexer.scanToken()) |token| {
-            std.debug.print("{any}\n", .{token});
             if (token.kind == .EOF) break;
         }
 
@@ -188,6 +188,14 @@ pub const Compiler = struct {
         self.emitConstant(Value{ .number = value });
     }
 
+    pub fn string(self: *Self) void {
+        const str: []const u8 = self.alloc.dupe(u8, self.previous.lexeme[1 .. self.previous.lexeme.len - 1]) catch {
+            self.errorMsg("Unable to copy string");
+            return;
+        };
+        self.emitConstant(Value{ .object = .{ .string = str } });
+    }
+
     fn unary(self: *Self) void {
         const optype: TokenType = self.previous.kind;
 
@@ -270,6 +278,7 @@ fn getParseRule(kind: TokenType) ParseRule {
         .STAR => ParseRule.init(null, Compiler.binary, .FACTOR),
         .BANG => ParseRule.init(Compiler.unary, null, .NONE),
         .BANG_EQUAL => ParseRule.init(null, Compiler.binary, .EQUALITY),
+        .STRING => ParseRule.init(Compiler.string, null, .NONE),
         .NUMBER => ParseRule.init(Compiler.number, null, .NONE),
         .TRUE => ParseRule.init(Compiler.literal, null, .NONE),
         .FALSE => ParseRule.init(Compiler.literal, null, .NONE),

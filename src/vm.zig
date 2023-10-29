@@ -96,14 +96,7 @@ pub const VM = struct {
     pub fn run(vm: *VM) InterpretResult {
         while (true) {
             if (builtin.mode == .Debug) {
-                std.debug.print("          ", .{});
-                for (0..vm.stackTop) |i| {
-                    const slot = vm.stack[i];
-                    std.debug.print("[ ", .{});
-                    zlox.printValue(slot);
-                    std.debug.print(" ]", .{});
-                }
-                std.debug.print("\n", .{});
+                vm.printStack();
             }
 
             const op = vm.readByte();
@@ -190,5 +183,18 @@ pub const VM = struct {
         }
 
         return .OK;
+    }
+
+    fn printStack(vm: *VM) void {
+        if (vm.stackTop > 0) {
+            std.debug.print("          ", .{});
+            for (0..vm.stackTop) |i| {
+                const slot = vm.stack[i];
+                std.debug.print("[ ", .{});
+                zlox.printValue(slot);
+                std.debug.print(" ]", .{});
+            }
+            std.debug.print("\n", .{});
+        }
     }
 };
