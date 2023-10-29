@@ -10,11 +10,14 @@ const zlox = struct {
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const BufSet = std.BufSet;
+const ValueMap = std.StringHashMap(Value);
 
 const Chunk = zlox.Chunk;
 const Compiler = zlox.Compiler;
 const OpCode = zlox.OpCode;
 const Value = zlox.Value;
+const Object = zlox.Object;
 const NoneVal = zlox.NoneVal;
 const TrueVal = zlox.TrueVal;
 const FalseVal = zlox.FalseVal;
@@ -33,14 +36,20 @@ pub const VM = struct {
     ip: usize,
     stack: [STACK_MAX]Value = undefined,
     stackTop: usize = 0,
-    heapValues: ArrayList(Value), // All heap allocs owned by the VM
+    //objects: ArrayList(Object), // All heap allocs owned by the VM
+    globals: ValueMap, // TODO: Custom hashmap with owned keys
+    global_names: BufSet,
+    strings: BufSet,
 
     pub fn init(alloc: Allocator) VM {
         var vm = VM{
             .alloc = alloc,
             .chunk = undefined,
             .ip = 0,
-            .heapValues = ArrayList(Value).init(alloc),
+            //.objects = ArrayList(Value).init(alloc),
+            .globals = ValueMap.init(alloc),
+            .global_names = BufSet.init(alloc),
+            .strings = BufSet.init(alloc),
         };
 
         // We can't have uninitialized values, so init the stack
@@ -55,10 +64,13 @@ pub const VM = struct {
 
     pub fn deinit(vm: *VM) void {
         // note: vm.chunk handled within interpret()
-        for (vm.heapValues.items) |*value| {
-            value.deinit(vm.alloc);
-        }
-        vm.heapValues.deinit();
+        // for (vm.objects.items) |*value| {
+        //     value.deinit(vm.alloc);
+        // }
+        // vm.objects.deinit();
+        vm.globals.deinit();
+        vm.global_names.deinit();
+        vm.strings.deinit();
     }
 
     pub fn resetStack(vm: *VM) void {
@@ -66,9 +78,10 @@ pub const VM = struct {
     }
 
     pub fn runtimeError(vm: *VM, comptime fmt: []const u8, args: anytype) void {
-        std.debug.print(fmt, args);
         const line: usize = vm.chunk.lines.items[vm.ip];
-        std.debug.print("[line {d}] in script\n", .{line});
+        std.debug.print("[line {d}] runtime error: ", .{line});
+        std.debug.print(fmt, args);
+        std.debug.print("\n", .{});
         vm.resetStack();
     }
 
@@ -77,6 +90,7 @@ pub const VM = struct {
         defer chunk.deinit();
 
         var compiler = Compiler.init(vm.alloc);
+        defer compiler.deinit();
         compiler.compile(input, &chunk) catch return .COMPILE_ERROR;
 
         vm.chunk = &chunk;
@@ -122,6 +136,8 @@ pub const VM = struct {
             .OP_NIL => vm.push(NoneVal),
             .OP_TRUE => vm.push(TrueVal),
             .OP_FALSE => vm.push(FalseVal),
+            .OP_POP => _ = vm.pop(),
+            .OP_DEFINE_GLOBAL => vm.defineGlobal() catch return .RUNTIME_ERROR,
             .OP_EQUAL => {
                 const a = vm.pop();
                 const b = vm.pop();
@@ -142,11 +158,11 @@ pub const VM = struct {
                 const val = vm.pop();
                 vm.push(Value{ .number = -val.number });
             },
-            .OP_RETURN => {
+            .OP_PRINT => {
                 zlox.printValue(vm.pop());
                 std.debug.print("\n", .{});
-                return .OK;
             },
+            .OP_RETURN => return .OK,
             else => {
                 return .RUNTIME_ERROR;
             },
@@ -164,6 +180,17 @@ pub const VM = struct {
     fn readConstant(vm: *VM) Value {
         const idx = vm.readByte().byte();
         return vm.chunk.constants.items[idx];
+    }
+
+    fn defineGlobal(vm: *VM) !void {
+        const value = vm.readConstant();
+        if (!zlox.isString(value)) {
+            vm.runtimeError("Expected obj.string, got {s}", .{@tagName(value)});
+        }
+        // Use the global_names to store an owned copy of the identifier
+        const ident = value.object.string;
+        try vm.global_names.insert(ident);
+        try vm.globals.put(vm.global_names.hash_map.getKey(ident).?, vm.pop());
     }
 
     fn binaryOp(vm: *VM, comptime op: u8) InterpretResult {
@@ -209,11 +236,16 @@ pub const VM = struct {
         const b: []const u8 = val_b.object.string;
         const a: []const u8 = val_a.object.string;
         const c = try std.mem.concat(vm.alloc, u8, &[_][]const u8{ a, b });
+        defer vm.alloc.free(c);
+
+        try vm.strings.insert(c);
+        const str_copy = vm.strings.hash_map.getKey(c).?;
+
+        const str = Value{ .object = .{ .string = str_copy } };
 
         // Because we allocated memory outside the Chunk,
         // add it to our array of owned heap allocations
-        const str = Value{ .object = .{ .string = c } };
-        try vm.heapValues.append(str);
+        //try vm.objects.append(str);
 
         vm.push(str);
     }

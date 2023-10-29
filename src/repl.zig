@@ -63,7 +63,7 @@ pub fn Repl(comptime InStream: type, comptime OutStream: type) type {
                 // TODO: run!
                 const res = vm.interpret(input);
                 if (res != .OK) {
-                    std.debug.print("ERROR: {any}\n", .{res});
+                    std.debug.print("ERROR: {s}\n", .{@tagName(res)});
                 }
 
                 try self.output.print("\n", .{});

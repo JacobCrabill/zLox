@@ -57,13 +57,20 @@ pub const Compiler = struct {
     hadError: bool = false,
     panicMode: bool = false,
     chunk: *Chunk = undefined,
+    strings: std.BufSet,
 
     pub fn init(alloc: Allocator) Self {
         return .{
             .alloc = alloc,
             .current = undefined,
             .previous = undefined,
+            .strings = std.BufSet.init(alloc),
         };
+    }
+
+    /// Free all heap allocations
+    pub fn deinit(self: *Self) void {
+        self.strings.deinit();
     }
 
     pub fn compile(self: *Self, input: []const u8, chunk: *Chunk) !void {
@@ -74,10 +81,9 @@ pub const Compiler = struct {
         self.panicMode = false;
 
         self.advance();
-        self.expression();
 
-        while (self.lexer.scanToken()) |token| {
-            if (token.kind == .EOF) break;
+        while (!self.match(.EOF)) {
+            self.declaration();
         }
 
         self.endCompiler();
@@ -110,6 +116,16 @@ pub const Compiler = struct {
         self.errorAtCurrent(error_msg);
     }
 
+    fn check(self: Self, kind: TokenType) bool {
+        return self.current.kind == kind;
+    }
+
+    fn match(self: *Self, kind: TokenType) bool {
+        if (!self.check(kind)) return false;
+        self.advance();
+        return true;
+    }
+
     /// Emit a single byte to the current Chunk being compiled
     fn emitByte(self: *Self, byte: u8) void {
         self.chunk.writeChunk(byte, self.previous.line) catch {
@@ -122,8 +138,18 @@ pub const Compiler = struct {
         self.emitByte(byte2);
     }
 
+    // Emit a single opcode to the current Chunk being compiled
+    fn emitOp(self: *Self, op: OpCode) void {
+        self.emitByte(op.byte());
+    }
+
+    // Emit two opcodes to the current Chunk being compiled
+    fn emitOps(self: *Self, op1: OpCode, op2: OpCode) void {
+        self.emitBytes(op1.byte(), op2.byte());
+    }
+
     fn emitReturn(self: *Self) void {
-        self.emitByte(OpCode.OP_RETURN.byte());
+        self.emitOp(.OP_RETURN);
     }
 
     fn makeConstant(self: *Self, value: Value) u8 {
@@ -153,25 +179,25 @@ pub const Compiler = struct {
         self.parsePrecedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
 
         switch (optype) {
-            .PLUS => self.emitByte(OpCode.OP_ADD.byte()),
-            .MINUS => self.emitByte(OpCode.OP_SUBTRACT.byte()),
-            .STAR => self.emitByte(OpCode.OP_MULTIPLY.byte()),
-            .SLASH => self.emitByte(OpCode.OP_DIVIDE.byte()),
-            .BANG_EQUAL => self.emitBytes(OpCode.OP_EQUAL.byte(), OpCode.OP_NOT.byte()),
-            .EQUAL_EQUAL => self.emitByte(OpCode.OP_EQUAL.byte()),
-            .GREATER => self.emitByte(OpCode.OP_GREATER.byte()),
-            .GREATER_EQUAL => self.emitBytes(OpCode.OP_LESS.byte(), OpCode.OP_NOT.byte()),
-            .LESS => self.emitByte(OpCode.OP_LESS.byte()),
-            .LESS_EQUAL => self.emitBytes(OpCode.OP_GREATER.byte(), OpCode.OP_NOT.byte()),
+            .PLUS => self.emitOp(.OP_ADD),
+            .MINUS => self.emitOp(.OP_SUBTRACT),
+            .STAR => self.emitOp(.OP_MULTIPLY),
+            .SLASH => self.emitOp(.OP_DIVIDE),
+            .BANG_EQUAL => self.emitOps(.OP_EQUAL, .OP_NOT),
+            .EQUAL_EQUAL => self.emitOp(.OP_EQUAL),
+            .GREATER => self.emitOp(.OP_GREATER),
+            .GREATER_EQUAL => self.emitOps(.OP_LESS, .OP_NOT),
+            .LESS => self.emitOp(.OP_LESS),
+            .LESS_EQUAL => self.emitOps(.OP_GREATER, .OP_NOT),
             else => return,
         }
     }
 
     fn literal(self: *Self) void {
         switch (self.previous.kind) {
-            .TRUE => self.emitByte(OpCode.OP_TRUE.byte()),
-            .FALSE => self.emitByte(OpCode.OP_FALSE.byte()),
-            .NIL => self.emitByte(OpCode.OP_NIL.byte()),
+            .TRUE => self.emitOp(.OP_TRUE),
+            .FALSE => self.emitOp(.OP_FALSE),
+            .NIL => self.emitOp(.OP_NIL),
             else => {},
         }
     }
@@ -188,10 +214,13 @@ pub const Compiler = struct {
 
     pub fn string(self: *Self) void {
         // Copy string out of input buffer to a buffer owned by the Object
-        const str: []const u8 = self.alloc.dupe(u8, self.previous.lexeme[1 .. self.previous.lexeme.len - 1]) catch {
+        const raw_str = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
+        self.strings.insert(raw_str) catch {
             self.errorMsg("Unable to copy string");
             return;
         };
+        // Get a pointer to the self-owned copy of the string
+        const str: []const u8 = self.strings.hash_map.getKey(raw_str).?;
         self.emitConstant(Value{ .object = .{ .string = str } });
     }
 
@@ -201,17 +230,9 @@ pub const Compiler = struct {
         self.parsePrecedence(.UNARY);
 
         switch (optype) {
-            .MINUS => self.emitByte(OpCode.OP_NEGATE.byte()),
-            .BANG => self.emitByte(OpCode.OP_NOT.byte()),
+            .MINUS => self.emitOp(.OP_NEGATE),
+            .BANG => self.emitOp(.OP_NOT),
             else => return,
-        }
-    }
-
-    fn prefixExpr(self: *Self, kind: TokenType) void {
-        switch (kind) {
-            .MINUS => self.unary(.TERM),
-            .NUMBER => self.number(),
-            else => {},
         }
     }
 
@@ -232,8 +253,84 @@ pub const Compiler = struct {
         }
     }
 
+    fn identifierConstant(self: *Self, token: Token) u8 {
+        // copy the identifier string into our strings set
+        self.strings.insert(token.lexeme) catch |err| {
+            std.debug.print("{any}\n", .{err});
+            return 0;
+        };
+        // Use the copied slice for the Object.String, not the input string
+        const ident: []const u8 = self.strings.hash_map.getKey(token.lexeme).?;
+        return self.makeConstant(.{ .object = .{ .string = ident } });
+    }
+
+    fn parseVariable(self: *Self, error_msg: []const u8) u8 {
+        self.consume(.IDENTIFIER, error_msg);
+        return self.identifierConstant(self.previous);
+    }
+
+    fn defineVariable(self: *Self, global: u8) void {
+        self.emitBytes(OpCode.OP_DEFINE_GLOBAL.byte(), global);
+    }
+
     fn expression(self: *Self) void {
         self.parsePrecedence(.ASSIGNMENT);
+    }
+
+    fn declaration(self: *Self) void {
+        if (self.match(.VAR)) {
+            self.varDeclaration();
+        } else {
+            self.statement();
+        }
+
+        if (self.panicMode) self.synchronize();
+    }
+
+    fn varDeclaration(self: *Self) void {
+        const global: u8 = self.parseVariable("Expected variable name");
+
+        if (self.match(.EQUAL)) {
+            self.expression();
+        } else {
+            self.emitOp(.OP_NIL);
+        }
+        self.consume(.SEMICOLON, "Expected ';' after variable declaration");
+
+        self.defineVariable(global);
+    }
+
+    fn statement(self: *Self) void {
+        if (self.match(.PRINT)) {
+            self.printStatement();
+        } else {
+            self.expressionStatement();
+        }
+    }
+
+    fn printStatement(self: *Self) void {
+        self.expression();
+        self.consume(.SEMICOLON, "Expected ';' after statement");
+        self.emitOp(.OP_PRINT);
+    }
+
+    fn expressionStatement(self: *Self) void {
+        self.expression();
+        self.consume(.SEMICOLON, "Expected ';' after expression");
+        self.emitOp(.OP_POP);
+    }
+
+    fn synchronize(self: *Self) void {
+        self.panicMode = false;
+        while (self.current.kind != .EOF) {
+            if (self.previous.kind == .SEMICOLON) return;
+            switch (self.current.kind) {
+                .CLASS, .FUN, .VAR, .FOR, .IF, .WHILE, .PRINT, .RETURN => return,
+                else => {},
+            }
+
+            self.advance();
+        }
     }
 
     // Error Handling Utility Functions

@@ -17,7 +17,7 @@ pub const Value = union(ValueType) {
     bool: bool,
     none: void,
     number: f64,
-    object: Object,
+    object: Object, // *ALL* objects live on the heap!
 
     pub fn deinit(value: *Value, alloc: Allocator) void {
         switch (value.*) {
@@ -31,8 +31,13 @@ pub const Object = union(ObjectType) {
     string: []const u8,
 
     pub fn deinit(obj: *Object, alloc: Allocator) void {
+        _ = alloc;
         switch (obj.*) {
-            .string => alloc.free(obj.string),
+            // For now, we are letting the VM's 'strings' BufSet manage all strings
+            //   (this just makes life easier)
+            // In the future, a custom strings hash map may transfer ownership
+            // back to the Object
+            .string => {}, // alloc.free(obj.string),
         }
     }
 };

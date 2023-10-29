@@ -34,6 +34,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     const op: OpCode = chunk.code.items[offset];
     switch (op) {
         .OP_CONSTANT => return constantInstruction(op, chunk, offset),
+        .OP_DEFINE_GLOBAL => return constantInstruction(op, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
