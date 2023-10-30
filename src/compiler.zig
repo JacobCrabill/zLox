@@ -47,7 +47,7 @@ pub const ParseRule = struct {
 };
 
 // Type alias for a Pratt parser function
-const ParseFn = *const fn (*Compiler) void;
+const ParseFn = *const fn (*Compiler, bool) void;
 
 pub const Compiler = struct {
     const Self = @This();
@@ -174,7 +174,8 @@ pub const Compiler = struct {
         }
     }
 
-    fn binary(self: *Self) void {
+    fn binary(self: *Self, can_assign: bool) void {
+        _ = can_assign;
         const optype: TokenType = self.previous.kind;
         var rule: ParseRule = getParseRule(optype);
         self.parsePrecedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
@@ -194,7 +195,8 @@ pub const Compiler = struct {
         }
     }
 
-    fn literal(self: *Self) void {
+    fn literal(self: *Self, can_assign: bool) void {
+        _ = can_assign;
         switch (self.previous.kind) {
             .TRUE => self.emitOp(.OP_TRUE),
             .FALSE => self.emitOp(.OP_FALSE),
@@ -203,17 +205,20 @@ pub const Compiler = struct {
         }
     }
 
-    pub fn grouping(self: *Self) void {
+    pub fn grouping(self: *Self, can_assign: bool) void {
+        _ = can_assign;
         self.expression();
         self.consume(.RIGHT_PAREN, "Expect ')' after expression");
     }
 
-    pub fn number(self: *Self) void {
+    pub fn number(self: *Self, can_assign: bool) void {
+        _ = can_assign;
         const value: f64 = std.fmt.parseFloat(f64, self.previous.lexeme) catch 0;
         self.emitConstant(Value{ .number = value });
     }
 
-    pub fn string(self: *Self) void {
+    pub fn string(self: *Self, can_assign: bool) void {
+        _ = can_assign;
         // Copy string out of input buffer to a buffer owned by the Object
         const raw_str = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
         var obj_str = zlox.copyString(self.vm, raw_str) catch {
@@ -223,16 +228,23 @@ pub const Compiler = struct {
         self.emitConstant(Value{ .object = obj_str });
     }
 
-    fn namedVariable(self: *Self, token: Token) void {
+    fn namedVariable(self: *Self, token: Token, can_assign: bool) void {
         const arg: u8 = self.identifierConstant(token);
-        self.emitBytes(OpCode.OP_GET_GLOBAL.byte(), arg);
+
+        if (can_assign and self.match(.EQUAL)) {
+            self.expression();
+            self.emitBytes(OpCode.OP_SET_GLOBAL.byte(), arg);
+        } else {
+            self.emitBytes(OpCode.OP_GET_GLOBAL.byte(), arg);
+        }
     }
 
-    fn variable(self: *Self) void {
-        self.namedVariable(self.previous);
+    fn variable(self: *Self, can_assign: bool) void {
+        self.namedVariable(self.previous, can_assign);
     }
 
-    fn unary(self: *Self) void {
+    fn unary(self: *Self, can_assign: bool) void {
+        _ = can_assign;
         const optype: TokenType = self.previous.kind;
 
         self.parsePrecedence(.UNARY);
@@ -246,8 +258,11 @@ pub const Compiler = struct {
 
     fn parsePrecedence(self: *Self, prec: Precedence) void {
         self.advance();
+
+        const can_assign: bool = @intFromEnum(prec) <= @intFromEnum(Precedence.ASSIGNMENT);
+
         if (getParseRule(self.previous.kind).prefix) |*prefixRule| {
-            prefixRule.*(self);
+            prefixRule.*(self, can_assign);
         } else {
             self.errorMsg("Invalid expression");
             return;
@@ -256,8 +271,12 @@ pub const Compiler = struct {
         while (@intFromEnum(prec) <= @intFromEnum(getParseRule(self.current.kind).precedence)) {
             self.advance();
             if (getParseRule(self.previous.kind).infix) |infixRule| {
-                infixRule(self);
+                infixRule(self, can_assign);
             }
+        }
+
+        if (can_assign and self.match(.EQUAL)) {
+            self.errorMsg("Invalid assignment target");
         }
     }
 

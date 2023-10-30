@@ -145,7 +145,17 @@ pub const VM = struct {
                 if (vm.globals.get(name)) |value| {
                     vm.push(value);
                 } else {
-                    vm.runtimeError("Undefined varialbe: '{s}'", .{name});
+                    vm.runtimeError("Undefined variable: '{s}'", .{name});
+                    return .RUNTIME_ERROR;
+                }
+            },
+            .OP_SET_GLOBAL => {
+                const name = vm.readString() catch return .RUNTIME_ERROR;
+                if (vm.globals.contains(name)) {
+                    const value = vm.peek(0);
+                    vm.globals.put(name, value) catch return .RUNTIME_ERROR;
+                } else {
+                    vm.runtimeError("Undefined variable: '{s}'", .{name});
                     return .RUNTIME_ERROR;
                 }
             },

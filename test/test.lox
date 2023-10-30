@@ -1,0 +1,12 @@
+var x = "Hello";
+var y = "World!";
+print x + " " + y;
+
+var foo = 9;
+var bar = 10;
+print bar / foo;
+foo = 10;
+print foo / bar;
+
+// foo      // error: expected ';' at end of expression
+print baz;  // Undefined variable: 'baz'

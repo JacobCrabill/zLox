@@ -36,6 +36,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
         .OP_CONSTANT => return constantInstruction(op, chunk, offset),
         .OP_DEFINE_GLOBAL => return constantInstruction(op, chunk, offset),
         .OP_GET_GLOBAL => return constantInstruction(op, chunk, offset),
+        .OP_SET_GLOBAL => return constantInstruction(op, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
