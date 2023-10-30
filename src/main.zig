@@ -43,6 +43,7 @@ pub fn main() !u8 {
     return 0;
 }
 
+/// Run the interpreter on the given file path
 fn runFile(path: []const u8, alloc: Allocator) !void {
     // Read file into memory
     var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
@@ -64,6 +65,7 @@ fn runFile(path: []const u8, alloc: Allocator) !void {
 test "basic ops" {
     var alloc = std.testing.allocator;
     var vm = VM.init(alloc);
+    defer vm.deinit();
     var chunk = Chunk.init(alloc);
     defer chunk.deinit();
 

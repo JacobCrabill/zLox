@@ -140,6 +140,15 @@ pub const VM = struct {
             .OP_TRUE => vm.push(TrueVal),
             .OP_FALSE => vm.push(FalseVal),
             .OP_POP => _ = vm.pop(),
+            .OP_GET_GLOBAL => {
+                const name = vm.readString() catch return .RUNTIME_ERROR;
+                if (vm.globals.get(name)) |value| {
+                    vm.push(value);
+                } else {
+                    vm.runtimeError("Undefined varialbe: '{s}'", .{name});
+                    return .RUNTIME_ERROR;
+                }
+            },
             .OP_DEFINE_GLOBAL => vm.defineGlobal() catch return .RUNTIME_ERROR,
             .OP_EQUAL => {
                 const a = vm.pop();

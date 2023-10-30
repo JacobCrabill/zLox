@@ -59,7 +59,6 @@ pub const Compiler = struct {
     hadError: bool = false,
     panicMode: bool = false,
     chunk: *Chunk = undefined,
-    strings: std.BufSet,
 
     pub fn init(alloc: Allocator, vm: *VM) Self {
         return .{
@@ -67,13 +66,12 @@ pub const Compiler = struct {
             .vm = vm,
             .current = undefined,
             .previous = undefined,
-            .strings = std.BufSet.init(alloc),
         };
     }
 
     /// Free all heap allocations
     pub fn deinit(self: *Self) void {
-        self.strings.deinit();
+        _ = self;
     }
 
     pub fn compile(self: *Self, input: []const u8, chunk: *Chunk) !void {
@@ -218,17 +216,20 @@ pub const Compiler = struct {
     pub fn string(self: *Self) void {
         // Copy string out of input buffer to a buffer owned by the Object
         const raw_str = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
-        // self.strings.insert(raw_str) catch {
-        //     self.errorMsg("Unable to copy string");
-        //     return;
-        // };
-        // // Get a pointer to the self-owned copy of the string
-        // const str: []const u8 = self.strings.hash_map.getKey(raw_str).?;
         var obj_str = zlox.copyString(self.vm, raw_str) catch {
             self.errorMsg("Unable to copy string");
             return;
         };
         self.emitConstant(Value{ .object = obj_str });
+    }
+
+    fn namedVariable(self: *Self, token: Token) void {
+        const arg: u8 = self.identifierConstant(token);
+        self.emitBytes(OpCode.OP_GET_GLOBAL.byte(), arg);
+    }
+
+    fn variable(self: *Self) void {
+        self.namedVariable(self.previous);
     }
 
     fn unary(self: *Self) void {
@@ -261,14 +262,6 @@ pub const Compiler = struct {
     }
 
     fn identifierConstant(self: *Self, token: Token) u8 {
-        // copy the identifier string into our strings set
-        // self.strings.insert(token.lexeme) catch |err| {
-        //     std.debug.print("{any}\n", .{err});
-        //     return 0;
-        // };
-        // Use the copied slice for the Object.String, not the input string
-        // const ident: []const u8 = self.strings.hash_map.getKey(token.lexeme).?;
-
         var obj_str: *Object = zlox.copyString(self.vm, token.lexeme) catch {
             self.errorMsg("Unable to copy string");
             return 0;
@@ -397,6 +390,7 @@ fn getParseRule(kind: TokenType) ParseRule {
         .GREATER_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
         .LESS => ParseRule.init(null, Compiler.binary, .COMPARISON),
         .LESS_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
+        .IDENTIFIER => ParseRule.init(Compiler.variable, null, .NONE),
         else => .{},
     };
 }
