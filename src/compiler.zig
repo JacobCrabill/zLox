@@ -10,6 +10,7 @@ const zlox = struct {
 };
 
 const Allocator = std.mem.Allocator;
+const VM = @import("vm.zig").VM;
 
 const Lexer = zlox.Lexer;
 const Chunk = zlox.Chunk;
@@ -51,6 +52,7 @@ const ParseFn = *const fn (*Compiler) void;
 pub const Compiler = struct {
     const Self = @This();
     alloc: Allocator,
+    vm: *VM = undefined, // necessary for handling Object ownership
     current: Token,
     previous: Token,
     lexer: Lexer = undefined,
@@ -59,9 +61,10 @@ pub const Compiler = struct {
     chunk: *Chunk = undefined,
     strings: std.BufSet,
 
-    pub fn init(alloc: Allocator) Self {
+    pub fn init(alloc: Allocator, vm: *VM) Self {
         return .{
             .alloc = alloc,
+            .vm = vm,
             .current = undefined,
             .previous = undefined,
             .strings = std.BufSet.init(alloc),
@@ -215,13 +218,17 @@ pub const Compiler = struct {
     pub fn string(self: *Self) void {
         // Copy string out of input buffer to a buffer owned by the Object
         const raw_str = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
-        self.strings.insert(raw_str) catch {
+        // self.strings.insert(raw_str) catch {
+        //     self.errorMsg("Unable to copy string");
+        //     return;
+        // };
+        // // Get a pointer to the self-owned copy of the string
+        // const str: []const u8 = self.strings.hash_map.getKey(raw_str).?;
+        var obj_str = zlox.copyString(self.vm, raw_str) catch {
             self.errorMsg("Unable to copy string");
             return;
         };
-        // Get a pointer to the self-owned copy of the string
-        const str: []const u8 = self.strings.hash_map.getKey(raw_str).?;
-        self.emitConstant(Value{ .object = .{ .string = str } });
+        self.emitConstant(Value{ .object = obj_str });
     }
 
     fn unary(self: *Self) void {
@@ -255,13 +262,18 @@ pub const Compiler = struct {
 
     fn identifierConstant(self: *Self, token: Token) u8 {
         // copy the identifier string into our strings set
-        self.strings.insert(token.lexeme) catch |err| {
-            std.debug.print("{any}\n", .{err});
+        // self.strings.insert(token.lexeme) catch |err| {
+        //     std.debug.print("{any}\n", .{err});
+        //     return 0;
+        // };
+        // Use the copied slice for the Object.String, not the input string
+        // const ident: []const u8 = self.strings.hash_map.getKey(token.lexeme).?;
+
+        var obj_str: *Object = zlox.copyString(self.vm, token.lexeme) catch {
+            self.errorMsg("Unable to copy string");
             return 0;
         };
-        // Use the copied slice for the Object.String, not the input string
-        const ident: []const u8 = self.strings.hash_map.getKey(token.lexeme).?;
-        return self.makeConstant(.{ .object = .{ .string = ident } });
+        return self.makeConstant(.{ .object = obj_str });
     }
 
     fn parseVariable(self: *Self, error_msg: []const u8) u8 {
@@ -340,8 +352,9 @@ pub const Compiler = struct {
     }
 
     fn errorAt(self: *Self, token: *const Token, msg: []const u8) void {
-        if (self.panicMode) return;
+        if (self.panicMode) return; // don't keep reporting new errors
         self.panicMode = true;
+
         std.debug.print("[line {d}] Error", .{token.line});
 
         if (token.kind == .EOF) {

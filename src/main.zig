@@ -49,8 +49,11 @@ fn runFile(path: []const u8, alloc: Allocator) !void {
     var realpath = try std.fs.realpath(path, &path_buf);
     var lox_file: File = try std.fs.openFileAbsolute(realpath, .{});
     var lox_text = try lox_file.readToEndAlloc(alloc, 1e9);
+    defer alloc.free(lox_text);
 
     var vm = VM.init(alloc);
+    defer vm.deinit();
+
     _ = vm.interpret(lox_text);
 }
 

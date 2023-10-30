@@ -74,7 +74,10 @@ pub const Lexer = struct {
             '"' => self.string(),
             '0'...'9' => self.number(),
             'a'...'z', 'A'...'Z', '_' => self.identifier(),
-            else => self.errorToken("Unexpected character"),
+            else => blk: {
+                std.debug.print("Unexpected char: 0x{x}\n", .{c});
+                break :blk self.errorToken("Unexpected character");
+            },
         };
     }
 
@@ -137,7 +140,7 @@ pub const Lexer = struct {
                         while (self.peek() != '\n' and !self.isAtEnd()) {
                             _ = self.advance();
                         }
-                        return;
+                        // don't return; loop around to handle the '\n'
                     } else {
                         return;
                     }

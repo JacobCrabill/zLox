@@ -24,7 +24,7 @@ pub const OpCode = enum(u8) {
     OP_NEGATE,
     OP_PRINT,
     OP_RETURN,
-    _,
+    _, // open enum to handle invalid opcodes in our program
 
     pub fn byte(op: OpCode) u8 {
         return @intFromEnum(op);
@@ -38,6 +38,7 @@ pub const Chunk = struct {
     constants: ArrayList(Value), // Constant values
     alloc: Allocator,
 
+    /// Create a new Chunk
     pub fn init(alloc: Allocator) Chunk {
         return Chunk{
             .alloc = alloc,
@@ -47,21 +48,23 @@ pub const Chunk = struct {
         };
     }
 
+    /// Free all resources
     pub fn deinit(self: *Chunk) void {
         self.code.deinit();
         self.lines.deinit();
-        for (self.constants.items) |*value| {
-            value.deinit(self.alloc);
-        }
+        // The VM owns all Objects' heap allocations,
+        // so we only need to deinit the array, not all the contents
         self.constants.deinit();
         self.* = undefined;
     }
 
+    /// Add a byte to the chunk's instructions
     pub fn writeChunk(self: *Chunk, byte: u8, line: usize) !void {
         try self.code.append(@enumFromInt(byte));
         try self.lines.append(line);
     }
 
+    /// Add a constant Value to the constants list
     pub fn addConstant(self: *Chunk, value: Value) u8 {
         self.constants.append(value) catch return 0;
         std.debug.assert(self.constants.items.len <= 256);

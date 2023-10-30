@@ -66,6 +66,6 @@ pub fn printValue(value: Value) void {
         .number => |num| std.debug.print("'{e}'", .{num}),
         .bool => |b| std.debug.print("'{}'", .{b}),
         .none => std.debug.print("'none'", .{}),
-        .object => |obj| printObject(obj),
+        .object => |obj| printObject(obj.*),
     }
 }

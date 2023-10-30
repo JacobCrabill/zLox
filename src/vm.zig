@@ -36,17 +36,18 @@ pub const VM = struct {
     ip: usize,
     stack: [STACK_MAX]Value = undefined,
     stackTop: usize = 0,
-    //objects: ArrayList(Object), // All heap allocs owned by the VM
+    objects: ArrayList(*Object), // All heap allocs owned by the VM
     globals: ValueMap, // TODO: Custom hashmap with owned keys
     global_names: BufSet,
     strings: BufSet,
 
+    /// Create a new Virtual Machine
     pub fn init(alloc: Allocator) VM {
         var vm = VM{
             .alloc = alloc,
             .chunk = undefined,
             .ip = 0,
-            //.objects = ArrayList(Value).init(alloc),
+            .objects = ArrayList(*Object).init(alloc),
             .globals = ValueMap.init(alloc),
             .global_names = BufSet.init(alloc),
             .strings = BufSet.init(alloc),
@@ -62,12 +63,14 @@ pub const VM = struct {
         return vm;
     }
 
+    /// Free all resources
     pub fn deinit(vm: *VM) void {
         // note: vm.chunk handled within interpret()
-        // for (vm.objects.items) |*value| {
-        //     value.deinit(vm.alloc);
-        // }
-        // vm.objects.deinit();
+        for (vm.objects.items) |*obj| {
+            obj.*.deinit(vm.alloc);
+            vm.alloc.destroy(obj.*);
+        }
+        vm.objects.deinit();
         vm.globals.deinit();
         vm.global_names.deinit();
         vm.strings.deinit();
@@ -89,7 +92,7 @@ pub const VM = struct {
         var chunk = Chunk.init(vm.alloc);
         defer chunk.deinit();
 
-        var compiler = Compiler.init(vm.alloc);
+        var compiler = Compiler.init(vm.alloc, vm);
         defer compiler.deinit();
         compiler.compile(input, &chunk) catch return .COMPILE_ERROR;
 
@@ -177,18 +180,26 @@ pub const VM = struct {
         return op;
     }
 
+    /// Read a constant from the chunk, using the next instruction as the index
     fn readConstant(vm: *VM) Value {
         const idx = vm.readByte().byte();
         return vm.chunk.constants.items[idx];
     }
 
-    fn defineGlobal(vm: *VM) !void {
+    /// Read a constant from the chunk as a string value
+    fn readString(vm: *VM) ![]const u8 {
         const value = vm.readConstant();
         if (!zlox.isString(value)) {
             vm.runtimeError("Expected obj.string, got {s}", .{@tagName(value)});
+            return error.InvalidType;
         }
+        return value.object.string;
+    }
+
+    fn defineGlobal(vm: *VM) !void {
         // Use the global_names to store an owned copy of the identifier
-        const ident = value.object.string;
+        // The BufSet also safely de-dupes the given string
+        const ident = try vm.readString();
         try vm.global_names.insert(ident);
         try vm.globals.put(vm.global_names.hash_map.getKey(ident).?, vm.pop());
     }
@@ -236,16 +247,10 @@ pub const VM = struct {
         const b: []const u8 = val_b.object.string;
         const a: []const u8 = val_a.object.string;
         const c = try std.mem.concat(vm.alloc, u8, &[_][]const u8{ a, b });
-        defer vm.alloc.free(c);
 
-        try vm.strings.insert(c);
-        const str_copy = vm.strings.hash_map.getKey(c).?;
-
-        const str = Value{ .object = .{ .string = str_copy } };
-
-        // Because we allocated memory outside the Chunk,
-        // add it to our array of owned heap allocations
-        //try vm.objects.append(str);
+        // Transfer ownership of the concatenated string to a new object
+        var obj = try zlox.takeString(vm, c);
+        const str = Value{ .object = obj };
 
         vm.push(str);
     }
