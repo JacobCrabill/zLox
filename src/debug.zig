@@ -12,7 +12,7 @@ pub const log = std.log.scoped(.zlox);
 pub fn disassembleChunk(chunk: *const Chunk, name: []const u8) void {
     if (builtin.mode == .Debug) {
         std.debug.print("== {s} ==\n", .{name});
-        std.debug.print("Idx  Line Op\n", .{});
+        std.debug.print("{s:<4}  {s:<4}  {s:<16}  {s:<4}  {s:<16}\n", .{ "ip", "Line", "OpCode", "cidx", "Value" });
 
         var offset: usize = 0;
         while (offset < chunk.code.items.len) {
@@ -22,11 +22,11 @@ pub fn disassembleChunk(chunk: *const Chunk, name: []const u8) void {
 }
 
 pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
-    std.debug.print("{d:0>4} ", .{offset});
+    std.debug.print("{d:0>4}  ", .{offset});
     if (offset > 0 and chunk.lines.items[offset] == chunk.lines.items[offset - 1]) {
-        std.debug.print("   | ", .{});
+        std.debug.print("|     ", .{});
     } else if (chunk.lines.items.len > 0) {
-        std.debug.print("{d:>4} ", .{chunk.lines.items[offset]});
+        std.debug.print("{d:<4}  ", .{chunk.lines.items[offset]});
     }
 
     std.debug.assert(chunk.code.items.len > 0);
@@ -35,6 +35,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     switch (op) {
         .OP_CONSTANT => return constantInstruction(op, chunk, offset),
         .OP_DEFINE_GLOBAL => return constantInstruction(op, chunk, offset),
+        .OP_GET_GLOBAL => return constantInstruction(op, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
@@ -43,7 +44,7 @@ pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize
     const constant: u8 = @intFromEnum(chunk.code.items[offset + 1]);
     const value: Value = chunk.constants.items[constant];
 
-    std.debug.print("{s:<16} {d:4} ", .{ @tagName(op), constant });
+    std.debug.print("{s:<16}  {d:<4}  ", .{ @tagName(op), constant });
     printValue(value);
     std.debug.print("\n", .{});
 
