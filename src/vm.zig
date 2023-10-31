@@ -159,6 +159,14 @@ pub const VM = struct {
                     return .RUNTIME_ERROR;
                 }
             },
+            .OP_GET_LOCAL => {
+                const slot = vm.readByte().byte();
+                vm.push(vm.stack[slot]);
+            },
+            .OP_SET_LOCAL => {
+                const slot = vm.readByte().byte();
+                vm.stack[slot] = vm.peek(0);
+            },
             .OP_DEFINE_GLOBAL => vm.defineGlobal() catch return .RUNTIME_ERROR,
             .OP_EQUAL => {
                 const a = vm.pop();

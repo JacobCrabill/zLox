@@ -49,6 +49,17 @@ pub const ParseRule = struct {
 // Type alias for a Pratt parser function
 const ParseFn = *const fn (*Compiler, bool) void;
 
+pub const Local = struct {
+    name: Token = undefined,
+    depth: i16 = 0,
+};
+
+pub const Locals = struct {
+    locals: [std.math.maxInt(u8)]Local = undefined,
+    local_count: u8 = 0,
+    scope_depth: u8 = 0,
+};
+
 pub const Compiler = struct {
     const Self = @This();
     alloc: Allocator,
@@ -59,6 +70,7 @@ pub const Compiler = struct {
     hadError: bool = false,
     panicMode: bool = false,
     chunk: *Chunk = undefined,
+    locals: Locals,
 
     pub fn init(alloc: Allocator, vm: *VM) Self {
         return .{
@@ -66,6 +78,7 @@ pub const Compiler = struct {
             .vm = vm,
             .current = undefined,
             .previous = undefined,
+            .locals = .{},
         };
     }
 
@@ -174,6 +187,21 @@ pub const Compiler = struct {
         }
     }
 
+    fn beginScope(self: *Self) void {
+        self.locals.scope_depth += 1;
+    }
+
+    fn endScope(self: *Self) void {
+        self.locals.scope_depth -= 1;
+
+        while (self.locals.local_count > 0 and
+            self.locals.locals[self.locals.local_count - 1].depth > self.locals.scope_depth)
+        {
+            self.emitOp(.OP_POP);
+            self.locals.local_count -= 1;
+        }
+    }
+
     fn binary(self: *Self, can_assign: bool) void {
         _ = can_assign;
         const optype: TokenType = self.previous.kind;
@@ -229,13 +257,22 @@ pub const Compiler = struct {
     }
 
     fn namedVariable(self: *Self, token: Token, can_assign: bool) void {
-        const arg: u8 = self.identifierConstant(token);
+        var get_op: OpCode = .OP_GET_GLOBAL;
+        var set_op: OpCode = .OP_SET_GLOBAL;
+        var arg: i16 = self.resolveLocal(token);
+
+        if (arg >= 0) {
+            get_op = .OP_GET_LOCAL;
+            set_op = .OP_SET_LOCAL;
+        } else {
+            arg = self.identifierConstant(token);
+        }
 
         if (can_assign and self.match(.EQUAL)) {
             self.expression();
-            self.emitBytes(OpCode.OP_SET_GLOBAL.byte(), arg);
+            self.emitBytes(set_op.byte(), @intCast(arg));
         } else {
-            self.emitBytes(OpCode.OP_GET_GLOBAL.byte(), arg);
+            self.emitBytes(get_op.byte(), @intCast(arg));
         }
     }
 
@@ -288,17 +325,85 @@ pub const Compiler = struct {
         return self.makeConstant(.{ .object = obj_str });
     }
 
+    fn resolveLocal(self: *Self, name: Token) i16 {
+        var i: i16 = @as(i16, self.locals.local_count) - 1;
+        while (i >= 0) : (i -= 1) {
+            const idx: usize = @intCast(i);
+            const local = self.locals.locals[idx];
+            if (std.mem.eql(u8, name.lexeme, local.name.lexeme)) {
+                if (local.depth == -1) {
+                    self.errorMsg("Can't read local variable in its own initializer");
+                }
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    fn addLocal(self: *Self, token: Token) void {
+        if (self.locals.local_count >= std.math.maxInt(u8)) {
+            self.errorMsg("Too many local variables in function");
+            return;
+        }
+
+        var local: *Local = &self.locals.locals[self.locals.local_count];
+        local.name = token;
+        local.depth = -1;
+        std.debug.print("Add local {s} with scope {d}\n", .{ local.name.lexeme, local.depth });
+        self.locals.local_count += 1;
+    }
+
+    fn declareVariable(self: *Self) void {
+        if (self.locals.scope_depth == 0) return; // Globals are late-bound
+
+        const name: Token = self.previous;
+        var i: i16 = @as(i16, self.locals.local_count) - 1;
+        while (i >= 0) : (i -= 1) {
+            var local: *Local = &self.locals.locals[@intCast(i)];
+            if (local.depth != -1 and local.depth < self.locals.scope_depth) {
+                break;
+            }
+
+            if (std.mem.eql(u8, name.lexeme, local.name.lexeme)) {
+                self.errorMsg("Duplicate variable declaration");
+            }
+        }
+
+        self.addLocal(self.previous);
+    }
+
     fn parseVariable(self: *Self, error_msg: []const u8) u8 {
         self.consume(.IDENTIFIER, error_msg);
+
+        self.declareVariable();
+        if (self.locals.scope_depth > 0) return 0; // Locals aren't resolved at runtime
+
         return self.identifierConstant(self.previous);
     }
 
     fn defineVariable(self: *Self, global: u8) void {
+        if (self.locals.scope_depth > 0) {
+            self.markInitialized();
+            return;
+        }
         self.emitBytes(OpCode.OP_DEFINE_GLOBAL.byte(), global);
+    }
+
+    fn markInitialized(self: *Self) void {
+        self.locals.locals[self.locals.local_count - 1].depth = self.locals.scope_depth;
     }
 
     fn expression(self: *Self) void {
         self.parsePrecedence(.ASSIGNMENT);
+    }
+
+    fn block(self: *Self) void {
+        while (!self.check(.RIGHT_BRACE) and !self.check(.EOF)) {
+            self.declaration();
+        }
+
+        self.consume(.RIGHT_BRACE, "Missing '}' after block");
     }
 
     fn declaration(self: *Self) void {
@@ -327,6 +432,10 @@ pub const Compiler = struct {
     fn statement(self: *Self) void {
         if (self.match(.PRINT)) {
             self.printStatement();
+        } else if (self.match(.LEFT_BRACE)) {
+            self.beginScope();
+            self.block();
+            self.endScope();
         } else {
             self.expressionStatement();
         }

@@ -35,20 +35,26 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     switch (op) {
         .OP_CONSTANT => return constantInstruction(op, chunk, offset),
         .OP_DEFINE_GLOBAL => return constantInstruction(op, chunk, offset),
-        .OP_GET_GLOBAL => return constantInstruction(op, chunk, offset),
-        .OP_SET_GLOBAL => return constantInstruction(op, chunk, offset),
+        .OP_GET_GLOBAL, .OP_SET_GLOBAL => return constantInstruction(op, chunk, offset),
+        .OP_GET_LOCAL, .OP_SET_LOCAL => return byteInstruction(op, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
 
 pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
-    const constant: u8 = @intFromEnum(chunk.code.items[offset + 1]);
+    const constant: u8 = chunk.code.items[offset + 1].byte();
     const value: Value = chunk.constants.items[constant];
 
     std.debug.print("{s:<16}  {d:<4}  ", .{ @tagName(op), constant });
     printValue(value);
     std.debug.print("\n", .{});
 
+    return offset + 2;
+}
+
+pub fn byteInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
+    const slot: u8 = chunk.code.items[offset + 1].byte();
+    std.debug.print("{s:<16}  {d:<4}  ", .{ @tagName(op), slot });
     return offset + 2;
 }
 
