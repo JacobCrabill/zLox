@@ -12,7 +12,7 @@ pub const log = std.log.scoped(.zlox);
 pub fn disassembleChunk(chunk: *const Chunk, name: []const u8) void {
     if (builtin.mode == .Debug) {
         std.debug.print("== {s} ==\n", .{name});
-        std.debug.print("{s:<4}  {s:<4}  {s:<16}  {s:<4}  {s:<16}\n", .{ "ip", "Line", "OpCode", "cidx", "Value" });
+        std.debug.print("{s:<4}  {s:<4}  {s:<16}  Data\n", .{ "ip", "Line", "OpCode" });
 
         var offset: usize = 0;
         while (offset < chunk.code.items.len) {
@@ -26,7 +26,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     if (offset > 0 and chunk.lines.items[offset] == chunk.lines.items[offset - 1]) {
         std.debug.print("|     ", .{});
     } else if (chunk.lines.items.len > 0) {
-        std.debug.print("{d:<4}  ", .{chunk.lines.items[offset]});
+        std.debug.print("{d:>4}  ", .{chunk.lines.items[offset]});
     }
 
     std.debug.assert(chunk.code.items.len > 0);
@@ -37,6 +37,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
         .OP_DEFINE_GLOBAL => return constantInstruction(op, chunk, offset),
         .OP_GET_GLOBAL, .OP_SET_GLOBAL => return constantInstruction(op, chunk, offset),
         .OP_GET_LOCAL, .OP_SET_LOCAL => return byteInstruction(op, chunk, offset),
+        .OP_JUMP_IF_FALSE, .OP_JUMP => return jumpInstruction(op, 1, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
@@ -45,7 +46,7 @@ pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize
     const constant: u8 = chunk.code.items[offset + 1].byte();
     const value: Value = chunk.constants.items[constant];
 
-    std.debug.print("{s:<16}  {d:<4}  ", .{ @tagName(op), constant });
+    std.debug.print("{s:<16}  {d:>4}  ", .{ @tagName(op), constant });
     printValue(value);
     std.debug.print("\n", .{});
 
@@ -54,8 +55,16 @@ pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize
 
 pub fn byteInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
     const slot: u8 = chunk.code.items[offset + 1].byte();
-    std.debug.print("{s:<16}  {d:<4}  ", .{ @tagName(op), slot });
+    std.debug.print("{s:<16}  {d:>4}  ", .{ @tagName(op), slot });
     return offset + 2;
+}
+
+fn jumpInstruction(op: OpCode, sign: i8, chunk: *const Chunk, offset: usize) usize {
+    var jump: u16 = (@as(u16, chunk.code.items[offset + 1].byte()) << 8) | chunk.code.items[offset + 2].byte();
+    var dest: i64 = @intCast(offset + 3);
+    dest += @as(i64, sign) * jump;
+    std.debug.print("{s:<16}  {d:>4} -> {d:<4}\n", .{ @tagName(op), offset, dest });
+    return offset + 3;
 }
 
 pub fn simpleInstruction(op: OpCode, offset: usize) usize {

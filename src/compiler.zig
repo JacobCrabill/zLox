@@ -157,6 +157,13 @@ pub const Compiler = struct {
         self.emitByte(op.byte());
     }
 
+    fn emitJump(self: *Self, op: OpCode) usize {
+        self.emitOp(op);
+        self.emitByte(0xff);
+        self.emitByte(0xff);
+        return self.chunk.code.items.len - 2;
+    }
+
     // Emit two opcodes to the current Chunk being compiled
     fn emitOps(self: *Self, op1: OpCode, op2: OpCode) void {
         self.emitBytes(op1.byte(), op2.byte());
@@ -178,6 +185,16 @@ pub const Compiler = struct {
 
     fn emitConstant(self: *Self, value: Value) void {
         self.emitBytes(OpCode.OP_CONSTANT.byte(), self.makeConstant(value));
+    }
+
+    fn patchJump(self: *Self, offset: usize) void {
+        const jump: usize = self.chunk.code.items.len - offset - 2;
+        if (jump >= std.math.maxInt(u16)) {
+            self.errorMsg("Jump size is too large!");
+        }
+
+        self.chunk.code.items[offset] = @enumFromInt((jump >> 8) & 0xff);
+        self.chunk.code.items[offset + 1] = @enumFromInt(jump & 0xff);
     }
 
     fn endCompiler(self: *Self) void {
@@ -436,6 +453,8 @@ pub const Compiler = struct {
             self.beginScope();
             self.block();
             self.endScope();
+        } else if (self.match(.IF)) {
+            self.ifStatement();
         } else {
             self.expressionStatement();
         }
@@ -451,6 +470,34 @@ pub const Compiler = struct {
         self.expression();
         self.consume(.SEMICOLON, "Expected ';' after expression");
         self.emitOp(.OP_POP);
+    }
+
+    fn ifStatement(self: *Self) void {
+        self.consume(.LEFT_PAREN, "Expected '(' after 'if'");
+        self.expression();
+        self.consume(.RIGHT_PAREN, "Expected '(' after condition");
+
+        const then_jump: usize = self.emitJump(.OP_JUMP_IF_FALSE);
+        self.emitOp(.OP_POP); // Pop the condition off the stack
+        if (self.match(.LEFT_BRACE)) {
+            self.block();
+        } else {
+            self.statement();
+        }
+
+        const else_jump: usize = self.emitJump(.OP_JUMP);
+
+        self.patchJump(then_jump);
+        self.emitOp(.OP_POP); // Pop the condition off the stack
+
+        if (self.match(.ELSE)) {
+            if (self.match(.LEFT_BRACE)) {
+                self.block();
+            } else {
+                self.statement();
+            }
+        }
+        self.patchJump(else_jump);
     }
 
     fn synchronize(self: *Self) void {

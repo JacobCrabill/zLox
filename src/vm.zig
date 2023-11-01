@@ -192,6 +192,16 @@ pub const VM = struct {
                 zlox.printValue(vm.pop());
                 std.debug.print("\n", .{});
             },
+            .OP_JUMP_IF_FALSE => {
+                const offset: u16 = vm.readU16();
+                if (zlox.isFalsey(vm.peek(0))) {
+                    vm.ip += offset;
+                }
+            },
+            .OP_JUMP => {
+                const offset: u16 = vm.readU16();
+                vm.ip += offset;
+            },
             .OP_RETURN => return .OK,
             else => {
                 return .RUNTIME_ERROR;
@@ -205,6 +215,13 @@ pub const VM = struct {
         const op = vm.chunk.code.items[vm.ip];
         vm.ip += 1;
         return op;
+    }
+
+    fn readU16(vm: *VM) u16 {
+        var val: u16 = @as(u16, vm.chunk.code.items[vm.ip].byte()) << 8;
+        val += vm.chunk.code.items[vm.ip + 1].byte();
+        vm.ip += 2;
+        return val;
     }
 
     /// Read a constant from the chunk, using the next instruction as the index
