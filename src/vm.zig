@@ -202,6 +202,10 @@ pub const VM = struct {
                 const offset: u16 = vm.readU16();
                 vm.ip += offset;
             },
+            .OP_LOOP => {
+                const offset: u16 = vm.readU16();
+                vm.ip -= offset;
+            },
             .OP_RETURN => return .OK,
             else => {
                 return .RUNTIME_ERROR;

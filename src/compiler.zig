@@ -164,6 +164,16 @@ pub const Compiler = struct {
         return self.chunk.code.items.len - 2;
     }
 
+    fn emitLoop(self: *Self, loop_start: usize) void {
+        self.emitOp(.OP_LOOP);
+        const offset = self.chunk.code.items.len - loop_start + 2;
+        if (offset >= std.math.maxInt(u16)) {
+            self.errorMsg("Loop body is too large!");
+        }
+        self.emitByte(@intCast((offset >> 8) & 0xff));
+        self.emitByte(@intCast(offset & 0xff));
+    }
+
     // Emit two opcodes to the current Chunk being compiled
     fn emitOps(self: *Self, op1: OpCode, op2: OpCode) void {
         self.emitBytes(op1.byte(), op2.byte());
@@ -411,6 +421,31 @@ pub const Compiler = struct {
         self.locals.locals[self.locals.local_count - 1].depth = self.locals.scope_depth;
     }
 
+    /// Skip the remaining condition expression if the preceding expression was falsey
+    fn _and(self: *Self, can_assign: bool) void {
+        _ = can_assign;
+        const end_jump: usize = self.emitJump(.OP_JUMP_IF_FALSE);
+
+        self.emitOp(.OP_POP);
+        self.parsePrecedence(.AND);
+
+        self.patchJump(end_jump);
+    }
+
+    /// Skip the remaining condition expression if the preceding expression was truthy
+    fn _or(self: *Self, can_assign: bool) void {
+        _ = can_assign;
+
+        const else_jump: usize = self.emitJump(.OP_JUMP_IF_FALSE);
+        const end_jump: usize = self.emitJump(.OP_JUMP);
+
+        self.patchJump(else_jump);
+        self.emitOp(.OP_POP);
+
+        self.parsePrecedence(.OR);
+        self.patchJump(end_jump);
+    }
+
     fn expression(self: *Self) void {
         self.parsePrecedence(.ASSIGNMENT);
     }
@@ -455,6 +490,8 @@ pub const Compiler = struct {
             self.endScope();
         } else if (self.match(.IF)) {
             self.ifStatement();
+        } else if (self.match(.WHILE)) {
+            self.whileStatement();
         } else {
             self.expressionStatement();
         }
@@ -498,6 +535,26 @@ pub const Compiler = struct {
             }
         }
         self.patchJump(else_jump);
+    }
+
+    fn whileStatement(self: *Self) void {
+        const loop_start = self.chunk.code.items.len;
+
+        self.consume(.LEFT_PAREN, "Expected '(' after 'while'");
+        self.expression();
+        self.consume(.RIGHT_PAREN, "Expected '(' after condition");
+
+        const exit_jump: usize = self.emitJump(.OP_JUMP_IF_FALSE);
+        self.emitOp(.OP_POP); // Pop the condition off the stack
+        if (self.match(.LEFT_BRACE)) {
+            self.block();
+        } else {
+            self.statement();
+        }
+        self.emitLoop(loop_start);
+
+        self.patchJump(exit_jump);
+        self.emitOp(.OP_POP);
     }
 
     fn synchronize(self: *Self) void {
@@ -557,6 +614,8 @@ fn getParseRule(kind: TokenType) ParseRule {
         .BANG_EQUAL => ParseRule.init(null, Compiler.binary, .EQUALITY),
         .STRING => ParseRule.init(Compiler.string, null, .NONE),
         .NUMBER => ParseRule.init(Compiler.number, null, .NONE),
+        .AND => ParseRule.init(null, Compiler._and, .AND),
+        .OR => ParseRule.init(null, Compiler._or, .OR),
         .TRUE => ParseRule.init(Compiler.literal, null, .NONE),
         .FALSE => ParseRule.init(Compiler.literal, null, .NONE),
         .NIL => ParseRule.init(Compiler.literal, null, .NONE),
