@@ -492,6 +492,8 @@ pub const Compiler = struct {
             self.ifStatement();
         } else if (self.match(.WHILE)) {
             self.whileStatement();
+        } else if (self.match(.FOR)) {
+            self.forStatement();
         } else {
             self.expressionStatement();
         }
@@ -555,6 +557,59 @@ pub const Compiler = struct {
 
         self.patchJump(exit_jump);
         self.emitOp(.OP_POP);
+    }
+
+    fn forStatement(self: *Self) void {
+        self.beginScope();
+        self.consume(.LEFT_PAREN, "Expected '(' after 'while'");
+
+        if (self.match(.SEMICOLON)) {
+            // no initializer
+        } else if (self.match(.VAR)) {
+            self.varDeclaration();
+        } else {
+            self.expressionStatement();
+        }
+
+        var loop_start = self.chunk.code.items.len;
+        var exit_jump: usize = 0;
+        var has_condition: bool = false;
+        if (!self.match(.SEMICOLON)) {
+            self.expression();
+            self.consume(.SEMICOLON, "Expect ';' after loop condition");
+
+            exit_jump = self.emitJump(.OP_JUMP_IF_FALSE);
+            has_condition = true;
+            self.emitOp(.OP_POP); // Condition
+        }
+
+        if (!self.match(.RIGHT_PAREN)) {
+            const body_jump = self.emitJump(.OP_JUMP);
+            const increment_start = self.chunk.code.items.len;
+
+            self.expression();
+            self.emitOp(.OP_POP);
+
+            self.consume(.RIGHT_PAREN, "Expected '(' after 'for' clauses");
+
+            self.emitLoop(loop_start);
+            loop_start = increment_start;
+            self.patchJump(body_jump);
+        }
+
+        if (self.match(.LEFT_BRACE)) {
+            self.block();
+        } else {
+            self.statement();
+        }
+        self.emitLoop(loop_start);
+
+        // Check if we had a loop condition expression
+        if (has_condition) {
+            self.patchJump(exit_jump);
+            self.emitOp(.OP_POP);
+        }
+        self.endScope();
     }
 
     fn synchronize(self: *Self) void {
