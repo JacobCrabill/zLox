@@ -19,6 +19,7 @@ const Token = zlox.Token;
 const TokenType = zlox.TokenType;
 const Value = zlox.Value;
 const Object = zlox.Object;
+const Function = zlox.Function;
 
 // zig fmt: off
 pub const Precedence = enum(u8) {
@@ -47,38 +48,58 @@ pub const ParseRule = struct {
 };
 
 // Type alias for a Pratt parser function
-const ParseFn = *const fn (*Compiler, bool) void;
+const ParseFn = *const fn (*Parser, bool) void;
 
 pub const Local = struct {
     name: Token = undefined,
     depth: i16 = 0,
 };
 
-pub const Locals = struct {
-    locals: [std.math.maxInt(u8)]Local = undefined,
-    local_count: u8 = 0,
-    scope_depth: u8 = 0,
+pub const FunctionType = enum(u8) {
+    Function,
+    Script,
 };
 
+const LOCALS_MAX: u32 = 256;
+
 pub const Compiler = struct {
+    enclosing: ?*Compiler = null,
+    fun_obj: *Object,
+    kind: FunctionType,
+
+    locals: [LOCALS_MAX]Local = undefined,
+    local_count: u8 = 0,
+    scope_depth: u8 = 0,
+
+    pub fn init(self: *Compiler, vm: *VM, current: ?*Compiler, kind: FunctionType) !void {
+        self.enclosing = current;
+        self.fun_obj = try zlox.newFunction(vm);
+        self.kind = kind;
+
+        // Initialize the compiler's stack - claim slot 0 for the VM
+        self.locals[0].name.lexeme = "";
+        self.local_count = 1;
+    }
+};
+
+pub const Parser = struct {
     const Self = @This();
-    alloc: Allocator,
+    alloc: Allocator = undefined,
     vm: *VM = undefined, // necessary for handling Object ownership
-    current: Token,
-    previous: Token,
+    current: Token = undefined,
+    previous: Token = undefined,
     lexer: Lexer = undefined,
     hadError: bool = false,
     panicMode: bool = false,
-    chunk: *Chunk = undefined,
-    locals: Locals,
+    compiler: Compiler = undefined,
 
-    pub fn init(alloc: Allocator, vm: *VM) Self {
+    pub fn init(vm: *VM) !Self {
         return .{
-            .alloc = alloc,
+            .alloc = vm.alloc,
             .vm = vm,
-            .current = undefined,
-            .previous = undefined,
-            .locals = .{},
+            // .current = undefined,
+            // .previous = undefined,
+            // .compiler = try Compiler.init(vm, .Script),
         };
     }
 
@@ -87,10 +108,10 @@ pub const Compiler = struct {
         _ = self;
     }
 
-    pub fn compile(self: *Self, input: []const u8, chunk: *Chunk) !void {
+    pub fn compile(self: *Self, input: []const u8) !*Object {
+        try self.compiler.init(self.vm, null, .Script);
         self.lexer = Lexer.init(input);
 
-        self.chunk = chunk;
         self.hadError = false;
         self.panicMode = false;
 
@@ -100,9 +121,10 @@ pub const Compiler = struct {
             self.declaration();
         }
 
-        self.endCompiler();
+        var fun_obj = self.endCompiler();
 
         if (self.hadError) return error.CompileError;
+        return fun_obj;
     }
 
     fn advance(self: *Self) void {
@@ -142,7 +164,7 @@ pub const Compiler = struct {
 
     /// Emit a single byte to the current Chunk being compiled
     fn emitByte(self: *Self, byte: u8) void {
-        self.chunk.writeChunk(byte, self.previous.line) catch {
+        self.chunk().writeChunk(byte, self.previous.line) catch {
             self.errorAt(&self.previous, "ERROR: Out of stack space?");
         };
     }
@@ -161,12 +183,12 @@ pub const Compiler = struct {
         self.emitOp(op);
         self.emitByte(0xff);
         self.emitByte(0xff);
-        return self.chunk.code.items.len - 2;
+        return self.chunk().code.items.len - 2;
     }
 
     fn emitLoop(self: *Self, loop_start: usize) void {
         self.emitOp(.OP_LOOP);
-        const offset = self.chunk.code.items.len - loop_start + 2;
+        const offset = self.chunk().code.items.len - loop_start + 2;
         if (offset >= std.math.maxInt(u16)) {
             self.errorMsg("Loop body is too large!");
         }
@@ -184,7 +206,7 @@ pub const Compiler = struct {
     }
 
     fn makeConstant(self: *Self, value: Value) u8 {
-        const idx = self.chunk.addConstant(value);
+        const idx = self.chunk().addConstant(value);
         if (idx > std.math.maxInt(u8)) {
             self.errorMsg("Too many constants in one chunk!");
             return 0;
@@ -198,34 +220,42 @@ pub const Compiler = struct {
     }
 
     fn patchJump(self: *Self, offset: usize) void {
-        const jump: usize = self.chunk.code.items.len - offset - 2;
+        const jump: usize = self.chunk().code.items.len - offset - 2;
         if (jump >= std.math.maxInt(u16)) {
             self.errorMsg("Jump size is too large!");
         }
 
-        self.chunk.code.items[offset] = @enumFromInt((jump >> 8) & 0xff);
-        self.chunk.code.items[offset + 1] = @enumFromInt(jump & 0xff);
+        self.chunk().code.items[offset] = @enumFromInt((jump >> 8) & 0xff);
+        self.chunk().code.items[offset + 1] = @enumFromInt(jump & 0xff);
     }
 
-    fn endCompiler(self: *Self) void {
+    fn endCompiler(self: *Self) *Object {
         self.emitReturn();
+        var fun_obj = self.compiler.fun_obj;
+
         if (builtin.mode == .Debug and !self.hadError) {
-            zlox.disassembleChunk(self.chunk, "code");
+            if (fun_obj.function.name.len > 0) {
+                zlox.disassembleChunk(self.chunk(), fun_obj.function.name);
+            } else {
+                zlox.disassembleChunk(self.chunk(), "<script>");
+            }
         }
+
+        return fun_obj;
     }
 
     fn beginScope(self: *Self) void {
-        self.locals.scope_depth += 1;
+        self.compiler.scope_depth += 1;
     }
 
     fn endScope(self: *Self) void {
-        self.locals.scope_depth -= 1;
+        self.compiler.scope_depth -= 1;
 
-        while (self.locals.local_count > 0 and
-            self.locals.locals[self.locals.local_count - 1].depth > self.locals.scope_depth)
+        while (self.compiler.local_count > 0 and
+            self.compiler.locals[self.compiler.local_count - 1].depth > self.compiler.scope_depth)
         {
             self.emitOp(.OP_POP);
-            self.locals.local_count -= 1;
+            self.compiler.local_count -= 1;
         }
     }
 
@@ -353,10 +383,10 @@ pub const Compiler = struct {
     }
 
     fn resolveLocal(self: *Self, name: Token) i16 {
-        var i: i16 = @as(i16, self.locals.local_count) - 1;
+        var i: i16 = @as(i16, self.compiler.local_count) - 1;
         while (i >= 0) : (i -= 1) {
             const idx: usize = @intCast(i);
-            const local = self.locals.locals[idx];
+            const local = self.compiler.locals[idx];
             if (std.mem.eql(u8, name.lexeme, local.name.lexeme)) {
                 if (local.depth == -1) {
                     self.errorMsg("Can't read local variable in its own initializer");
@@ -369,26 +399,26 @@ pub const Compiler = struct {
     }
 
     fn addLocal(self: *Self, token: Token) void {
-        if (self.locals.local_count >= std.math.maxInt(u8)) {
+        if (self.compiler.local_count >= std.math.maxInt(u8)) {
             self.errorMsg("Too many local variables in function");
             return;
         }
 
-        var local: *Local = &self.locals.locals[self.locals.local_count];
+        var local: *Local = &self.compiler.locals[self.compiler.local_count];
         local.name = token;
         local.depth = -1;
         std.debug.print("Add local {s} with scope {d}\n", .{ local.name.lexeme, local.depth });
-        self.locals.local_count += 1;
+        self.compiler.local_count += 1;
     }
 
     fn declareVariable(self: *Self) void {
-        if (self.locals.scope_depth == 0) return; // Globals are late-bound
+        if (self.compiler.scope_depth == 0) return; // Globals are late-bound
 
         const name: Token = self.previous;
-        var i: i16 = @as(i16, self.locals.local_count) - 1;
+        var i: i16 = @as(i16, self.compiler.local_count) - 1;
         while (i >= 0) : (i -= 1) {
-            var local: *Local = &self.locals.locals[@intCast(i)];
-            if (local.depth != -1 and local.depth < self.locals.scope_depth) {
+            var local: *Local = &self.compiler.locals[@intCast(i)];
+            if (local.depth != -1 and local.depth < self.compiler.scope_depth) {
                 break;
             }
 
@@ -404,13 +434,13 @@ pub const Compiler = struct {
         self.consume(.IDENTIFIER, error_msg);
 
         self.declareVariable();
-        if (self.locals.scope_depth > 0) return 0; // Locals aren't resolved at runtime
+        if (self.compiler.scope_depth > 0) return 0; // Locals aren't resolved at runtime
 
         return self.identifierConstant(self.previous);
     }
 
     fn defineVariable(self: *Self, global: u8) void {
-        if (self.locals.scope_depth > 0) {
+        if (self.compiler.scope_depth > 0) {
             self.markInitialized();
             return;
         }
@@ -418,7 +448,7 @@ pub const Compiler = struct {
     }
 
     fn markInitialized(self: *Self) void {
-        self.locals.locals[self.locals.local_count - 1].depth = self.locals.scope_depth;
+        self.compiler.locals[self.compiler.local_count - 1].depth = self.compiler.scope_depth;
     }
 
     /// Skip the remaining condition expression if the preceding expression was falsey
@@ -540,7 +570,7 @@ pub const Compiler = struct {
     }
 
     fn whileStatement(self: *Self) void {
-        const loop_start = self.chunk.code.items.len;
+        const loop_start = self.chunk().code.items.len;
 
         self.consume(.LEFT_PAREN, "Expected '(' after 'while'");
         self.expression();
@@ -571,7 +601,7 @@ pub const Compiler = struct {
             self.expressionStatement();
         }
 
-        var loop_start = self.chunk.code.items.len;
+        var loop_start = self.chunk().code.items.len;
         var exit_jump: usize = 0;
         var has_condition: bool = false;
         if (!self.match(.SEMICOLON)) {
@@ -585,7 +615,7 @@ pub const Compiler = struct {
 
         if (!self.match(.RIGHT_PAREN)) {
             const body_jump = self.emitJump(.OP_JUMP);
-            const increment_start = self.chunk.code.items.len;
+            const increment_start = self.chunk().code.items.len;
 
             self.expression();
             self.emitOp(.OP_POP);
@@ -625,6 +655,11 @@ pub const Compiler = struct {
         }
     }
 
+    /// Get the current chunk being compiled into
+    fn chunk(self: *Self) *Chunk {
+        return &self.compiler.fun_obj.function.chunk;
+    }
+
     // Error Handling Utility Functions
 
     fn errorAtCurrent(self: *Self, msg: []const u8) void {
@@ -660,26 +695,26 @@ pub const Compiler = struct {
 /// infix and prefix functions, with a precedence of NONE
 fn getParseRule(kind: TokenType) ParseRule {
     return switch (kind) {
-        .LEFT_PAREN => ParseRule.init(Compiler.grouping, null, .NONE),
-        .MINUS => ParseRule.init(Compiler.unary, Compiler.binary, .TERM),
-        .PLUS => ParseRule.init(null, Compiler.binary, .TERM),
-        .SLASH => ParseRule.init(null, Compiler.binary, .FACTOR),
-        .STAR => ParseRule.init(null, Compiler.binary, .FACTOR),
-        .BANG => ParseRule.init(Compiler.unary, null, .NONE),
-        .BANG_EQUAL => ParseRule.init(null, Compiler.binary, .EQUALITY),
-        .STRING => ParseRule.init(Compiler.string, null, .NONE),
-        .NUMBER => ParseRule.init(Compiler.number, null, .NONE),
-        .AND => ParseRule.init(null, Compiler._and, .AND),
-        .OR => ParseRule.init(null, Compiler._or, .OR),
-        .TRUE => ParseRule.init(Compiler.literal, null, .NONE),
-        .FALSE => ParseRule.init(Compiler.literal, null, .NONE),
-        .NIL => ParseRule.init(Compiler.literal, null, .NONE),
-        .EQUAL_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
-        .GREATER => ParseRule.init(null, Compiler.binary, .COMPARISON),
-        .GREATER_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
-        .LESS => ParseRule.init(null, Compiler.binary, .COMPARISON),
-        .LESS_EQUAL => ParseRule.init(null, Compiler.binary, .COMPARISON),
-        .IDENTIFIER => ParseRule.init(Compiler.variable, null, .NONE),
+        .LEFT_PAREN => ParseRule.init(Parser.grouping, null, .NONE),
+        .MINUS => ParseRule.init(Parser.unary, Parser.binary, .TERM),
+        .PLUS => ParseRule.init(null, Parser.binary, .TERM),
+        .SLASH => ParseRule.init(null, Parser.binary, .FACTOR),
+        .STAR => ParseRule.init(null, Parser.binary, .FACTOR),
+        .BANG => ParseRule.init(Parser.unary, null, .NONE),
+        .BANG_EQUAL => ParseRule.init(null, Parser.binary, .EQUALITY),
+        .STRING => ParseRule.init(Parser.string, null, .NONE),
+        .NUMBER => ParseRule.init(Parser.number, null, .NONE),
+        .AND => ParseRule.init(null, Parser._and, .AND),
+        .OR => ParseRule.init(null, Parser._or, .OR),
+        .TRUE => ParseRule.init(Parser.literal, null, .NONE),
+        .FALSE => ParseRule.init(Parser.literal, null, .NONE),
+        .NIL => ParseRule.init(Parser.literal, null, .NONE),
+        .EQUAL_EQUAL => ParseRule.init(null, Parser.binary, .COMPARISON),
+        .GREATER => ParseRule.init(null, Parser.binary, .COMPARISON),
+        .GREATER_EQUAL => ParseRule.init(null, Parser.binary, .COMPARISON),
+        .LESS => ParseRule.init(null, Parser.binary, .COMPARISON),
+        .LESS_EQUAL => ParseRule.init(null, Parser.binary, .COMPARISON),
+        .IDENTIFIER => ParseRule.init(Parser.variable, null, .NONE),
         else => .{},
     };
 }

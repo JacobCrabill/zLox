@@ -61,19 +61,11 @@ pub fn Repl(comptime InStream: type, comptime OutStream: type) type {
                     continue;
 
                 // TODO: run!
-                const res = vm.interpret(input);
-                if (res != .OK) {
-                    std.debug.print("ERROR: {s}\n", .{@tagName(res)});
-                }
-
-                try self.output.print("\n", .{});
+                vm.interpret(input) catch |err| {
+                    std.debug.print("ERROR: {}\n", .{err});
+                };
+                // try self.output.print("\n", .{});
             }
-        }
-
-        pub fn runOnce(self: *Self, input: []const u8) !void {
-            _ = input;
-            // var lex = Lexer.init(input);
-            try self.output.print("\n", .{});
         }
 
         fn nextLine(self: *Self) !?[]const u8 {

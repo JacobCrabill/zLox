@@ -14,6 +14,7 @@ const BufSet = std.BufSet;
 const ValueMap = std.StringHashMap(Value);
 
 const Chunk = zlox.Chunk;
+const Parser = zlox.Parser;
 const Compiler = zlox.Compiler;
 const OpCode = zlox.OpCode;
 const Value = zlox.Value;
@@ -23,7 +24,7 @@ const TrueVal = zlox.TrueVal;
 const FalseVal = zlox.FalseVal;
 
 /// TODO: Convert to std.error enum; use Zig error handling
-pub const InterpretResult = enum(u8) {
+pub const LoxError = error{
     OK,
     COMPILE_ERROR,
     RUNTIME_ERROR,
@@ -88,15 +89,12 @@ pub const VM = struct {
         vm.resetStack();
     }
 
-    pub fn interpret(vm: *VM, input: []const u8) InterpretResult {
-        var chunk = Chunk.init(vm.alloc);
-        defer chunk.deinit();
-
-        var compiler = Compiler.init(vm.alloc, vm);
+    pub fn interpret(vm: *VM, input: []const u8) !void {
+        var compiler = try Parser.init(vm);
         defer compiler.deinit();
-        compiler.compile(input, &chunk) catch return .COMPILE_ERROR;
+        var fn_obj = try compiler.compile(input);
 
-        vm.chunk = &chunk;
+        vm.chunk = &fn_obj.function.chunk;
         vm.ip = 0;
 
         return vm.run();
@@ -116,21 +114,20 @@ pub const VM = struct {
         return vm.stack[vm.stackTop - 1 - distance];
     }
 
-    pub fn run(vm: *VM) InterpretResult {
+    pub fn run(vm: *VM) !void {
         while (true) {
             if (builtin.mode == .Debug) {
                 vm.printStack();
             }
 
             const op = vm.readByte();
-            // TODO: Replace with Zig error enum; use try / catch
-            const res: InterpretResult = vm.interpretOp(op);
-            if (res != .OK or op == .OP_RETURN)
-                return res;
+            try vm.interpretOp(op);
+            if (op == .OP_RETURN)
+                return;
         }
     }
 
-    fn interpretOp(vm: *VM, op: OpCode) InterpretResult {
+    fn interpretOp(vm: *VM, op: OpCode) !void {
         switch (op) {
             .OP_CONSTANT => {
                 const val = vm.readConstant();
@@ -141,22 +138,22 @@ pub const VM = struct {
             .OP_FALSE => vm.push(FalseVal),
             .OP_POP => _ = vm.pop(),
             .OP_GET_GLOBAL => {
-                const name = vm.readString() catch return .RUNTIME_ERROR;
+                const name = try vm.readString();
                 if (vm.globals.get(name)) |value| {
                     vm.push(value);
                 } else {
                     vm.runtimeError("Undefined variable: '{s}'", .{name});
-                    return .RUNTIME_ERROR;
+                    return LoxError.RUNTIME_ERROR;
                 }
             },
             .OP_SET_GLOBAL => {
-                const name = vm.readString() catch return .RUNTIME_ERROR;
+                const name = try vm.readString();
                 if (vm.globals.contains(name)) {
                     const value = vm.peek(0);
-                    vm.globals.put(name, value) catch return .RUNTIME_ERROR;
+                    try vm.globals.put(name, value);
                 } else {
                     vm.runtimeError("Undefined variable: '{s}'", .{name});
-                    return .RUNTIME_ERROR;
+                    return LoxError.RUNTIME_ERROR;
                 }
             },
             .OP_GET_LOCAL => {
@@ -167,23 +164,23 @@ pub const VM = struct {
                 const slot = vm.readByte().byte();
                 vm.stack[slot] = vm.peek(0);
             },
-            .OP_DEFINE_GLOBAL => vm.defineGlobal() catch return .RUNTIME_ERROR,
+            .OP_DEFINE_GLOBAL => try vm.defineGlobal(),
             .OP_EQUAL => {
                 const a = vm.pop();
                 const b = vm.pop();
                 vm.push(Value{ .bool = zlox.valuesEqual(a, b) });
             },
-            .OP_GREATER => return vm.binaryOp('>'),
-            .OP_LESS => return vm.binaryOp('<'),
-            .OP_ADD => return vm.binaryOp('+'),
-            .OP_SUBTRACT => return vm.binaryOp('-'),
-            .OP_MULTIPLY => return vm.binaryOp('*'),
-            .OP_DIVIDE => return vm.binaryOp('/'),
+            .OP_GREATER => try vm.binaryOp('>'),
+            .OP_LESS => try vm.binaryOp('<'),
+            .OP_ADD => try vm.binaryOp('+'),
+            .OP_SUBTRACT => try vm.binaryOp('-'),
+            .OP_MULTIPLY => try vm.binaryOp('*'),
+            .OP_DIVIDE => try vm.binaryOp('/'),
             .OP_NOT => vm.push(Value{ .bool = zlox.isFalsey(vm.pop()) }),
             .OP_NEGATE => {
                 if (vm.peek(0) != .number) {
                     vm.runtimeError("Operand must be a number", .{});
-                    return .RUNTIME_ERROR;
+                    return LoxError.RUNTIME_ERROR;
                 }
                 const val = vm.pop();
                 vm.push(Value{ .number = -val.number });
@@ -206,13 +203,11 @@ pub const VM = struct {
                 const offset: u16 = vm.readU16();
                 vm.ip -= offset;
             },
-            .OP_RETURN => return .OK,
+            .OP_RETURN => return,
             else => {
-                return .RUNTIME_ERROR;
+                return LoxError.RUNTIME_ERROR;
             },
         }
-
-        return .OK;
     }
 
     fn readByte(vm: *VM) OpCode {
@@ -252,15 +247,15 @@ pub const VM = struct {
         try vm.globals.put(vm.global_names.hash_map.getKey(ident).?, vm.pop());
     }
 
-    fn binaryOp(vm: *VM, comptime op: u8) InterpretResult {
+    fn binaryOp(vm: *VM, comptime op: u8) !void {
         if (zlox.isString(vm.peek(0)) and zlox.isString(vm.peek(1))) {
             if (op != '+') {
                 vm.runtimeError("Invalid binary operator for strings: '{c}'", .{op});
-                return .RUNTIME_ERROR;
+                return LoxError.RUNTIME_ERROR;
             }
 
             vm.concatenate() catch {
-                return .RUNTIME_ERROR;
+                return LoxError.RUNTIME_ERROR;
             };
         } else if (vm.peek(0) == .number and vm.peek(1) == .number) {
             // Handle normal number binary operators
@@ -281,10 +276,8 @@ pub const VM = struct {
             }
         } else {
             vm.runtimeError("Binary operands must be two numbers or strings", .{});
-            return .RUNTIME_ERROR;
+            return LoxError.RUNTIME_ERROR;
         }
-
-        return .OK;
     }
 
     /// Concatenate two strings on top of the stack

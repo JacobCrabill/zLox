@@ -74,8 +74,24 @@ pub fn simpleInstruction(op: OpCode, offset: usize) usize {
 }
 
 pub fn printObject(obj: Object) void {
-    switch (obj) {
-        .string => |s| std.debug.print("Obj.String: '{s}'", .{s}),
+    if (builtin.mode == .Debug) {
+        // More verbose type output for debugging
+        switch (obj) {
+            .string => |s| std.debug.print("Obj.String: '{s}'", .{s}),
+            .function => |f| std.debug.print("Obj.Function: '{s}'", .{f.name}),
+        }
+    } else {
+        // Normal output for normal usage
+        switch (obj) {
+            .string => |s| std.debug.print("{s}", .{s}),
+            .function => |f| {
+                if (f.name.len > 0) {
+                    std.debug.print("<fun {s}>", .{f.name});
+                } else {
+                    std.debug.print("<script>", .{});
+                }
+            },
+        }
     }
 }
 

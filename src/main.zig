@@ -55,7 +55,7 @@ fn runFile(path: []const u8, alloc: Allocator) !void {
     var vm = VM.init(alloc);
     defer vm.deinit();
 
-    _ = vm.interpret(lox_text);
+    try vm.interpret(lox_text);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

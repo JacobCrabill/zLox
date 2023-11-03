@@ -1,5 +1,6 @@
 const std = @import("std");
 const VM = @import("vm.zig").VM;
+const Chunk = @import("chunk.zig").Chunk;
 
 const Allocator = std.mem.Allocator;
 
@@ -14,6 +15,7 @@ pub const ValueType = enum(u8) {
 /// Enum for Object types
 pub const ObjType = enum(u8) {
     string,
+    function,
 };
 
 /// The base type of all values in Lox
@@ -34,12 +36,20 @@ pub const Value = union(ValueType) {
 /// Objects are Values which live on the heap
 pub const Object = union(ObjType) {
     string: []const u8,
+    function: Function,
 
     pub fn deinit(obj: *Object, alloc: Allocator) void {
         switch (obj.*) {
             .string => alloc.free(obj.string),
+            .function => |*f| f.chunk.deinit(),
         }
     }
+};
+
+pub const Function = struct {
+    arity: usize = 0,
+    chunk: Chunk = undefined,
+    name: []const u8 = undefined,
 };
 
 pub const NoneVal: Value = Value{ .none = {} };
@@ -91,6 +101,7 @@ pub fn objectsEqual(a: Object, b: Object) bool {
 
     switch (a) {
         .string => |s| return std.mem.eql(u8, s, b.string),
+        .function => |f| return std.mem.eql(u8, f.name, b.function.name),
     }
 }
 
@@ -100,6 +111,13 @@ pub fn createObject(vm: *VM, obj: Object) !*Object {
     new_obj.* = obj;
     try vm.objects.append(new_obj);
     return vm.objects.getLast();
+}
+
+/// Allocate a new Object on the heap of type 'Function'
+/// Initializes the function's chunk using the VM's allocator
+pub fn newFunction(vm: *VM) !*Object {
+    var fun = Function{ .chunk = Chunk.init(vm.alloc) };
+    return try createObject(vm, Object{ .function = fun });
 }
 
 /// Allocates an Object of type 'string' on the heap, transferring ownership
