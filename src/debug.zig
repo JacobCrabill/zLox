@@ -26,7 +26,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     if (offset > 0 and chunk.lines.items[offset] == chunk.lines.items[offset - 1]) {
         std.debug.print("|     ", .{});
     } else if (chunk.lines.items.len > 0) {
-        std.debug.print("{d:>4}  ", .{chunk.lines.items[offset]});
+        std.debug.print("{d:<4}  ", .{chunk.lines.items[offset]});
     }
 
     std.debug.assert(chunk.code.items.len > 0);
@@ -56,7 +56,7 @@ pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize
 
 pub fn byteInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
     const slot: u8 = chunk.code.items[offset + 1].byte();
-    std.debug.print("{s:<16}  {d:>4}  ", .{ @tagName(op), slot });
+    std.debug.print("{s:<16}  {d:>4}\n", .{ @tagName(op), slot });
     return offset + 2;
 }
 
@@ -78,7 +78,13 @@ pub fn printObject(obj: Object) void {
         // More verbose type output for debugging
         switch (obj) {
             .string => |s| std.debug.print("Obj.String: '{s}'", .{s}),
-            .function => |f| std.debug.print("Obj.Function: '{s}'", .{f.name}),
+            .function => |f| {
+                if (f.name.len > 0) {
+                    std.debug.print("Obj.Function: '{s}'", .{f.name});
+                } else {
+                    std.debug.print("Obj.Function: '<script>", .{});
+                }
+            },
         }
     } else {
         // Normal output for normal usage

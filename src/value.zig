@@ -49,7 +49,7 @@ pub const Object = union(ObjType) {
 pub const Function = struct {
     arity: usize = 0,
     chunk: Chunk = undefined,
-    name: []const u8 = undefined,
+    name: []const u8 = "",
 };
 
 pub const NoneVal: Value = Value{ .none = {} };
@@ -106,6 +106,7 @@ pub fn objectsEqual(a: Object, b: Object) bool {
 }
 
 /// Allocate a new Object on the heap, adding it to our global objects list
+/// The object is created on the stack, but copied to the heap
 pub fn createObject(vm: *VM, obj: Object) !*Object {
     var new_obj = try vm.alloc.create(Object);
     new_obj.* = obj;

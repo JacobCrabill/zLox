@@ -19,6 +19,7 @@ const Token = zlox.Token;
 const TokenType = zlox.TokenType;
 const Value = zlox.Value;
 const Object = zlox.Object;
+const ObjType = zlox.ObjType;
 const Function = zlox.Function;
 
 // zig fmt: off
@@ -183,12 +184,12 @@ pub const Parser = struct {
         self.emitOp(op);
         self.emitByte(0xff);
         self.emitByte(0xff);
-        return self.chunk().code.items.len - 2;
+        return self.code().len - 2;
     }
 
     fn emitLoop(self: *Self, loop_start: usize) void {
         self.emitOp(.OP_LOOP);
-        const offset = self.chunk().code.items.len - loop_start + 2;
+        const offset = self.code().len - loop_start + 2;
         if (offset >= std.math.maxInt(u16)) {
             self.errorMsg("Loop body is too large!");
         }
@@ -220,20 +221,21 @@ pub const Parser = struct {
     }
 
     fn patchJump(self: *Self, offset: usize) void {
-        const jump: usize = self.chunk().code.items.len - offset - 2;
+        const jump: usize = self.code().len - offset - 2;
         if (jump >= std.math.maxInt(u16)) {
             self.errorMsg("Jump size is too large!");
         }
 
-        self.chunk().code.items[offset] = @enumFromInt((jump >> 8) & 0xff);
-        self.chunk().code.items[offset + 1] = @enumFromInt(jump & 0xff);
+        self.code()[offset] = @enumFromInt((jump >> 8) & 0xff);
+        self.code()[offset + 1] = @enumFromInt(jump & 0xff);
     }
 
     fn endCompiler(self: *Self) *Object {
         self.emitReturn();
-        var fun_obj = self.compiler.fun_obj;
+        var fun_obj: *Object = self.compiler.fun_obj;
 
         if (builtin.mode == .Debug and !self.hadError) {
+            std.debug.assert(fun_obj.* == ObjType.function);
             if (fun_obj.function.name.len > 0) {
                 zlox.disassembleChunk(self.chunk(), fun_obj.function.name);
             } else {
@@ -570,7 +572,7 @@ pub const Parser = struct {
     }
 
     fn whileStatement(self: *Self) void {
-        const loop_start = self.chunk().code.items.len;
+        const loop_start = self.code().len;
 
         self.consume(.LEFT_PAREN, "Expected '(' after 'while'");
         self.expression();
@@ -601,7 +603,7 @@ pub const Parser = struct {
             self.expressionStatement();
         }
 
-        var loop_start = self.chunk().code.items.len;
+        var loop_start = self.code().len;
         var exit_jump: usize = 0;
         var has_condition: bool = false;
         if (!self.match(.SEMICOLON)) {
@@ -615,7 +617,7 @@ pub const Parser = struct {
 
         if (!self.match(.RIGHT_PAREN)) {
             const body_jump = self.emitJump(.OP_JUMP);
-            const increment_start = self.chunk().code.items.len;
+            const increment_start = self.code().len;
 
             self.expression();
             self.emitOp(.OP_POP);
@@ -658,6 +660,11 @@ pub const Parser = struct {
     /// Get the current chunk being compiled into
     fn chunk(self: *Self) *Chunk {
         return &self.compiler.fun_obj.function.chunk;
+    }
+
+    /// Get the current bytecode slice
+    fn code(self: *Self) []OpCode {
+        return self.chunk().code.items;
     }
 
     // Error Handling Utility Functions
