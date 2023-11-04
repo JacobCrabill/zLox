@@ -103,7 +103,7 @@ pub fn printObject(obj: Object) void {
 
 pub fn printValue(value: Value) void {
     switch (value) {
-        .number => |num| std.debug.print("'{e}'", .{num}),
+        .number => |num| std.debug.print("'{d:.3}'", .{num}),
         .bool => |b| std.debug.print("'{}'", .{b}),
         .none => std.debug.print("'none'", .{}),
         .object => |obj| printObject(obj.*),

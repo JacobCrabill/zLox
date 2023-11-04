@@ -118,6 +118,8 @@ pub const Parser = struct {
 
         self.advance();
 
+        self.emitConstant(zlox.NoneVal); // HACK until CallFrames implemented
+
         while (!self.match(.EOF)) {
             self.declaration();
         }
@@ -252,6 +254,7 @@ pub const Parser = struct {
 
     fn endScope(self: *Self) void {
         self.compiler.scope_depth -= 1;
+        std.debug.print("Ending current scope\n", .{});
 
         while (self.compiler.local_count > 0 and
             self.compiler.locals[self.compiler.local_count - 1].depth > self.compiler.scope_depth)
@@ -328,8 +331,10 @@ pub const Parser = struct {
 
         if (can_assign and self.match(.EQUAL)) {
             self.expression();
+            std.debug.print("{}\n", .{set_op});
             self.emitBytes(set_op.byte(), @intCast(arg));
         } else {
+            std.debug.print("{}\n", .{get_op});
             self.emitBytes(get_op.byte(), @intCast(arg));
         }
     }
@@ -481,7 +486,9 @@ pub const Parser = struct {
     }
 
     fn block(self: *Self) void {
+        std.debug.print("Begin block\n", .{});
         while (!self.check(.RIGHT_BRACE) and !self.check(.EOF)) {
+            std.debug.print("in block\n", .{});
             self.declaration();
         }
 
@@ -538,6 +545,7 @@ pub const Parser = struct {
     fn expressionStatement(self: *Self) void {
         self.expression();
         self.consume(.SEMICOLON, "Expected ';' after expression");
+        std.debug.print("expr statement\n", .{});
         self.emitOp(.OP_POP);
     }
 
