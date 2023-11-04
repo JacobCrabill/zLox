@@ -158,6 +158,8 @@ pub const VM = struct {
             },
             .OP_GET_LOCAL => {
                 const slot = vm.readByte().byte();
+                std.debug.print("GET_LOCAL slot {d}: ", .{slot});
+                zlox.printValue(vm.stack[slot]);
                 vm.push(vm.stack[slot]);
             },
             .OP_SET_LOCAL => {

@@ -65,14 +65,14 @@ const LOCALS_MAX: u32 = 256;
 
 pub const Compiler = struct {
     enclosing: ?*Compiler = null,
-    fun_obj: *Object,
-    kind: FunctionType,
+    fun_obj: *Object = undefined,
+    kind: FunctionType = .Script,
 
     locals: [LOCALS_MAX]Local = undefined,
     local_count: u8 = 0,
     scope_depth: u8 = 0,
 
-    pub fn init(self: *Compiler, vm: *VM, current: ?*Compiler, kind: FunctionType) !void {
+    pub fn setup(self: *Compiler, vm: *VM, current: ?*Compiler, kind: FunctionType) !void {
         self.enclosing = current;
         self.fun_obj = try zlox.newFunction(vm);
         self.kind = kind;
@@ -92,7 +92,7 @@ pub const Parser = struct {
     lexer: Lexer = undefined,
     hadError: bool = false,
     panicMode: bool = false,
-    compiler: Compiler = undefined,
+    compiler: Compiler = Compiler{},
 
     pub fn init(vm: *VM) !Self {
         return .{
@@ -110,7 +110,7 @@ pub const Parser = struct {
     }
 
     pub fn compile(self: *Self, input: []const u8) !*Object {
-        try self.compiler.init(self.vm, null, .Script);
+        try self.compiler.setup(self.vm, null, .Script);
         self.lexer = Lexer.init(input);
 
         self.hadError = false;
@@ -316,14 +316,13 @@ pub const Parser = struct {
     }
 
     fn namedVariable(self: *Self, token: Token, can_assign: bool) void {
-        var get_op: OpCode = .OP_GET_GLOBAL;
-        var set_op: OpCode = .OP_SET_GLOBAL;
+        var get_op: OpCode = .OP_GET_LOCAL;
+        var set_op: OpCode = .OP_SET_LOCAL;
         var arg: i16 = self.resolveLocal(token);
 
-        if (arg >= 0) {
-            get_op = .OP_GET_LOCAL;
-            set_op = .OP_SET_LOCAL;
-        } else {
+        if (arg < 0) {
+            get_op = .OP_GET_GLOBAL;
+            set_op = .OP_SET_GLOBAL;
             arg = self.identifierConstant(token);
         }
 
@@ -409,7 +408,6 @@ pub const Parser = struct {
         var local: *Local = &self.compiler.locals[self.compiler.local_count];
         local.name = token;
         local.depth = -1;
-        std.debug.print("Add local {s} with scope {d}\n", .{ local.name.lexeme, local.depth });
         self.compiler.local_count += 1;
     }
 
