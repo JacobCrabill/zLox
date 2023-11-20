@@ -36,6 +36,7 @@ pub const CallFrame = struct {
     ip: usize = 0, // Instruction 'pointer' into the function's code chunk
     slots: []Value = undefined,
     rbsp: usize = 0, // Stack base pointer prior to adding this CallFrame
+    chunk: *Chunk = undefined, // Pointer to the function's Chunk
 
     /// Initialize a CallFrame
     /// 'function' must be a heap-allocated Function object
@@ -45,14 +46,11 @@ pub const CallFrame = struct {
         frame.ip = 0;
         frame.slots = stack;
         frame.rbsp = stack_base;
+        frame.chunk = &function.function.chunk;
     }
 
     pub fn deinit(frame: *CallFrame) void {
         _ = frame;
-    }
-
-    pub fn chunk(frame: *CallFrame) *Chunk {
-        return &frame.obj.function.chunk;
     }
 };
 
@@ -117,7 +115,7 @@ pub const VM = struct {
         var i = vm.frameCount;
         while (i > 0) : (i -= 1) {
             const frame = &vm.frames[i - 1];
-            const line: usize = frame.chunk().lines.items[frame.ip - 1];
+            const line: usize = frame.chunk.lines.items[frame.ip - 1];
             const name = frame.obj.function.getName();
             std.debug.print("[line {d}] in {s}\n", .{ line, name });
         }
@@ -277,15 +275,15 @@ pub const VM = struct {
 
     fn readByte(vm: *VM) OpCode {
         var frame: *CallFrame = vm.currentFrame();
-        const op = frame.chunk().code.items[frame.ip];
+        const op = frame.chunk.code.items[frame.ip];
         frame.ip += 1;
         return op;
     }
 
     fn readU16(vm: *VM) u16 {
         var frame: *CallFrame = vm.currentFrame();
-        var val: u16 = @as(u16, frame.chunk().code.items[frame.ip].byte()) << 8;
-        val += frame.chunk().code.items[frame.ip + 1].byte();
+        var val: u16 = @as(u16, frame.chunk.code.items[frame.ip].byte()) << 8;
+        val += frame.chunk.code.items[frame.ip + 1].byte();
         frame.ip += 2;
         return val;
     }
@@ -293,7 +291,7 @@ pub const VM = struct {
     /// Read a constant from the chunk, using the next instruction as the index
     fn readConstant(vm: *VM) Value {
         const idx = vm.readByte().byte();
-        return vm.currentFrame().chunk().constants.items[idx];
+        return vm.currentFrame().chunk.constants.items[idx];
     }
 
     /// Read a constant from the chunk as a string value
