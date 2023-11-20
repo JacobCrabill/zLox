@@ -16,6 +16,7 @@ pub const ValueType = enum(u8) {
 pub const ObjType = enum(u8) {
     string,
     function,
+    native,
 };
 
 /// The base type of all values in Lox
@@ -37,11 +38,13 @@ pub const Value = union(ValueType) {
 pub const Object = union(ObjType) {
     string: []const u8,
     function: Function,
+    native: NativeFn,
 
     pub fn deinit(obj: *Object, alloc: Allocator) void {
         switch (obj.*) {
             .string => alloc.free(obj.string),
             .function => |*f| f.chunk.deinit(),
+            else => {},
         }
     }
 };
@@ -49,8 +52,18 @@ pub const Object = union(ObjType) {
 pub const Function = struct {
     arity: usize = 0,
     chunk: Chunk = undefined,
-    name: []const u8 = "",
+    name: ?*Object = null, // String object containing the function name (if not script)
+
+    pub fn getName(fun: Function) []const u8 {
+        if (fun.name) |obj| {
+            return obj.string;
+        }
+
+        return "script";
+    }
 };
+
+pub const NativeFn = *const fn (argc: u8, argv: []Value) Value;
 
 pub const NoneVal: Value = Value{ .none = {} };
 pub const TrueVal: Value = Value{ .bool = true };
@@ -101,7 +114,22 @@ pub fn objectsEqual(a: Object, b: Object) bool {
 
     switch (a) {
         .string => |s| return std.mem.eql(u8, s, b.string),
-        .function => |f| return std.mem.eql(u8, f.name, b.function.name),
+        .function => |f| {
+            // Compare function names
+            // Empty names mean script scope
+            if (f.name) |aname| {
+                if (b.function.name) |bname| {
+                    return std.mem.eql(u8, aname.string, bname.string);
+                } else {
+                    return false;
+                }
+            }
+            if (b.function.name) |_| return false;
+            return true;
+        },
+        .native => |native| {
+            return @intFromPtr(native) == @intFromPtr(b.native);
+        },
     }
 }
 
@@ -119,6 +147,11 @@ pub fn createObject(vm: *VM, obj: Object) !*Object {
 pub fn newFunction(vm: *VM) !*Object {
     var fun = Function{ .chunk = Chunk.init(vm.alloc) };
     return try createObject(vm, Object{ .function = fun });
+}
+
+/// Allocate a new Object on the heap of type 'NativeFn'
+pub fn newNative(vm: *VM, native: NativeFn) !*Object {
+    return try createObject(vm, Object{ .native = native });
 }
 
 /// Allocates an Object of type 'string' on the heap, transferring ownership

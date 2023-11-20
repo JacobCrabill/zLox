@@ -19,6 +19,7 @@ const Compiler = zlox.Compiler;
 const OpCode = zlox.OpCode;
 const Value = zlox.Value;
 const Object = zlox.Object;
+const NativeFn = zlox.NativeFn;
 const NoneVal = zlox.NoneVal;
 const TrueVal = zlox.TrueVal;
 const FalseVal = zlox.FalseVal;
@@ -30,14 +31,40 @@ pub const LoxError = error{
     RUNTIME_ERROR,
 };
 
+pub const CallFrame = struct {
+    obj: *Object = undefined, // Pointer to the VM-owned Function object
+    ip: usize = 0, // Instruction 'pointer' into the function's code chunk
+    slots: []Value = undefined,
+    rbsp: usize = 0, // Stack base pointer prior to adding this CallFrame
+
+    /// Initialize a CallFrame
+    /// 'function' must be a heap-allocated Function object
+    pub fn init(frame: *CallFrame, function: *Object, stack: []Value, stack_base: usize) void {
+        std.debug.assert(function.* == zlox.ObjType.function);
+        frame.obj = function;
+        frame.ip = 0;
+        frame.slots = stack;
+        frame.rbsp = stack_base;
+    }
+
+    pub fn deinit(frame: *CallFrame) void {
+        _ = frame;
+    }
+
+    pub fn chunk(frame: *CallFrame) *Chunk {
+        return &frame.obj.function.chunk;
+    }
+};
+
 pub const VM = struct {
-    pub const STACK_MAX: u32 = 256;
+    pub const FRAMES_MAX: u32 = 64;
+    pub const STACK_MAX: u32 = FRAMES_MAX * 256;
     alloc: Allocator,
-    chunk: *Chunk,
-    ip: usize,
     stack: [STACK_MAX]Value = undefined,
     stackTop: usize = 0,
-    objects: ArrayList(*Object), // All heap allocs owned by the VM
+    frames: [FRAMES_MAX]CallFrame = undefined,
+    frameCount: u8 = 0,
+    objects: ArrayList(*Object), // All heap-allocated Objects owned by the VM
     globals: ValueMap, // TODO: Custom hashmap with owned keys
     global_names: BufSet,
     strings: BufSet,
@@ -46,8 +73,7 @@ pub const VM = struct {
     pub fn init(alloc: Allocator) VM {
         var vm = VM{
             .alloc = alloc,
-            .chunk = undefined,
-            .ip = 0,
+            .frameCount = 0,
             .objects = ArrayList(*Object).init(alloc),
             .globals = ValueMap.init(alloc),
             .global_names = BufSet.init(alloc),
@@ -60,6 +86,10 @@ pub const VM = struct {
         }
 
         vm.resetStack();
+
+        vm.defineNative("clock", clockNative) catch |err| {
+            std.debug.print("Error defining native function: {any}\n", .{err});
+        };
 
         return vm;
     }
@@ -82,20 +112,28 @@ pub const VM = struct {
     }
 
     pub fn runtimeError(vm: *VM, comptime fmt: []const u8, args: anytype) void {
-        const line: usize = vm.chunk.lines.items[vm.ip];
-        std.debug.print("[line {d}] runtime error: ", .{line});
-        std.debug.print(fmt, args);
-        std.debug.print("\n", .{});
+        std.debug.print(fmt ++ "\n", args);
+
+        var i = vm.frameCount;
+        while (i > 0) : (i -= 1) {
+            const frame = &vm.frames[i - 1];
+            const line: usize = frame.chunk().lines.items[frame.ip - 1];
+            const name = frame.obj.function.getName();
+            std.debug.print("[line {d}] in {s}\n", .{ line, name });
+        }
         vm.resetStack();
     }
 
     pub fn interpret(vm: *VM, input: []const u8) !void {
-        var compiler = try Parser.init(vm);
-        defer compiler.deinit();
-        var fn_obj = try compiler.compile(input);
+        var parser = try Parser.init(vm);
+        defer parser.deinit();
 
-        vm.chunk = &fn_obj.function.chunk;
-        vm.ip = 0;
+        var fn_obj = try parser.compile(input);
+
+        vm.push(Value{ .object = fn_obj });
+        if (!vm.call(fn_obj, 0)) {
+            return LoxError.RUNTIME_ERROR;
+        }
 
         return vm.run();
     }
@@ -121,13 +159,18 @@ pub const VM = struct {
             }
 
             const op = vm.readByte();
-            try vm.interpretOp(op);
-            if (op == .OP_RETURN)
-                return;
+            vm.interpretOp(op) catch |err| {
+                if (err == LoxError.OK) {
+                    // Program exited normally
+                    return;
+                }
+                return err;
+            };
         }
     }
 
     fn interpretOp(vm: *VM, op: OpCode) !void {
+        var frame = vm.currentFrame();
         switch (op) {
             .OP_CONSTANT => {
                 const val = vm.readConstant();
@@ -158,14 +201,11 @@ pub const VM = struct {
             },
             .OP_GET_LOCAL => {
                 const slot = vm.readByte().byte();
-                std.debug.print("GET_LOCAL slot {d}: ", .{slot});
-                zlox.printValue(vm.stack[slot]);
-                std.debug.print("\n", .{});
-                vm.push(vm.stack[slot]);
+                vm.push(frame.slots[slot]);
             },
             .OP_SET_LOCAL => {
                 const slot = vm.readByte().byte();
-                vm.stack[slot] = vm.peek(0);
+                frame.slots[slot] = vm.peek(0);
             },
             .OP_DEFINE_GLOBAL => try vm.defineGlobal(),
             .OP_EQUAL => {
@@ -195,41 +235,65 @@ pub const VM = struct {
             .OP_JUMP_IF_FALSE => {
                 const offset: u16 = vm.readU16();
                 if (zlox.isFalsey(vm.peek(0))) {
-                    vm.ip += offset;
+                    vm.currentFrame().ip += offset;
                 }
             },
             .OP_JUMP => {
                 const offset: u16 = vm.readU16();
-                vm.ip += offset;
+                vm.currentFrame().ip += offset;
             },
             .OP_LOOP => {
                 const offset: u16 = vm.readU16();
-                vm.ip -= offset;
+                vm.currentFrame().ip -= offset;
             },
-            .OP_RETURN => return,
+            .OP_CALL => {
+                const argc = vm.readByte().byte();
+                if (!vm.callValue(vm.peek(argc), argc)) {
+                    return LoxError.RUNTIME_ERROR;
+                }
+            },
+            .OP_RETURN => {
+                var result = vm.pop();
+                vm.frameCount -= 1;
+                if (vm.frameCount == 0) {
+                    _ = vm.pop();
+                    return LoxError.OK;
+                }
+
+                // Unroll the function stack
+                vm.stackTop = frame.rbsp;
+                vm.push(result);
+            },
             else => {
                 return LoxError.RUNTIME_ERROR;
             },
         }
     }
 
+    fn currentFrame(vm: *VM) *CallFrame {
+        std.debug.assert(vm.frameCount < VM.FRAMES_MAX);
+        return &vm.frames[vm.frameCount - 1];
+    }
+
     fn readByte(vm: *VM) OpCode {
-        const op = vm.chunk.code.items[vm.ip];
-        vm.ip += 1;
+        var frame: *CallFrame = vm.currentFrame();
+        const op = frame.chunk().code.items[frame.ip];
+        frame.ip += 1;
         return op;
     }
 
     fn readU16(vm: *VM) u16 {
-        var val: u16 = @as(u16, vm.chunk.code.items[vm.ip].byte()) << 8;
-        val += vm.chunk.code.items[vm.ip + 1].byte();
-        vm.ip += 2;
+        var frame: *CallFrame = vm.currentFrame();
+        var val: u16 = @as(u16, frame.chunk().code.items[frame.ip].byte()) << 8;
+        val += frame.chunk().code.items[frame.ip + 1].byte();
+        frame.ip += 2;
         return val;
     }
 
     /// Read a constant from the chunk, using the next instruction as the index
     fn readConstant(vm: *VM) Value {
         const idx = vm.readByte().byte();
-        return vm.chunk.constants.items[idx];
+        return vm.currentFrame().chunk().constants.items[idx];
     }
 
     /// Read a constant from the chunk as a string value
@@ -283,6 +347,62 @@ pub const VM = struct {
         }
     }
 
+    /// Assume the given Value is a function to be called.
+    /// Return false if it is not a function, or if calling it fails.
+    fn callValue(vm: *VM, callee: Value, argc: u8) bool {
+        switch (callee) {
+            .object => |obj| {
+                switch (obj.*) {
+                    .function => |_| return vm.call(obj, argc),
+                    .native => |native| {
+                        const result: Value = native(argc, vm.stack[vm.stackTop - argc ..]);
+                        vm.stackTop -= argc + 1;
+                        vm.push(result);
+                        return true;
+                    },
+                    else => {},
+                }
+            },
+            else => {},
+        }
+
+        vm.runtimeError("Can only call functions and classes", .{});
+        return false;
+    }
+
+    /// Call the given Function object (the Object is already known to be a Function)
+    fn call(vm: *VM, fun_obj: *Object, argc: u8) bool {
+        if (argc != fun_obj.function.arity) {
+            vm.runtimeError("Function {s} expected {d} arguments but given {d}", .{
+                fun_obj.function.getName(),
+                fun_obj.function.arity,
+                argc,
+            });
+            return false;
+        }
+
+        if (vm.frameCount == VM.FRAMES_MAX) {
+            vm.runtimeError("Stack overflow", .{});
+            return false;
+        }
+
+        var frame: *CallFrame = &vm.frames[vm.frameCount];
+        vm.frameCount += 1;
+        const rbsp = vm.stackTop - argc - 1;
+        frame.init(fun_obj, vm.stack[rbsp..], rbsp);
+
+        return true;
+    }
+
+    /// Add a native function to our globals
+    fn defineNative(vm: *VM, name: []const u8, native: NativeFn) !void {
+        vm.push(Value{ .object = try zlox.copyString(vm, name) });
+        vm.push(Value{ .object = try zlox.newNative(vm, native) });
+        try vm.globals.put(vm.peek(1).object.string, vm.peek(0));
+        _ = vm.pop();
+        _ = vm.pop();
+    }
+
     /// Concatenate two strings on top of the stack
     fn concatenate(vm: *VM) !void {
         var val_b = vm.pop();
@@ -312,3 +432,15 @@ pub const VM = struct {
         }
     }
 };
+
+///////////////////////////////////////////////////////////////////////////////
+/// Native Functions
+///////////////////////////////////////////////////////////////////////////////
+
+/// Get the current system time in seconds
+pub fn clockNative(argc: u8, argv: []Value) Value {
+    _ = argc;
+    _ = argv;
+    var micros: f64 = @floatFromInt(std.time.microTimestamp());
+    return Value{ .number = micros / 1e6 };
+}

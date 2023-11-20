@@ -1,6 +1,11 @@
 const std = @import("std");
 
-const Value = @import("value.zig").Value;
+const zlox = struct {
+    usingnamespace @import("debug.zig");
+    usingnamespace @import("value.zig");
+};
+
+const Value = zlox.Value;
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -30,6 +35,7 @@ pub const OpCode = enum(u8) {
     OP_JUMP_IF_FALSE,
     OP_JUMP,
     OP_LOOP,
+    OP_CALL,
     OP_RETURN,
     _, // open enum to handle invalid opcodes in our program
 
@@ -75,6 +81,10 @@ pub const Chunk = struct {
     pub fn addConstant(self: *Chunk, value: Value) u8 {
         self.constants.append(value) catch return 0;
         std.debug.assert(self.constants.items.len <= 256);
+        // DEBUGGING
+        // std.debug.print("Add constant id {d}: ", .{self.constants.items.len - 1});
+        // zlox.printValue(value);
+        // std.debug.print("\n", .{});
         return @intCast(self.constants.items.len - 1);
     }
 };

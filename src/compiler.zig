@@ -65,21 +65,32 @@ const LOCALS_MAX: u32 = 256;
 
 pub const Compiler = struct {
     enclosing: ?*Compiler = null,
-    fun_obj: *Object = undefined,
+    fun_obj: *Object = undefined, // Pointer to the Function object being compiled
     kind: FunctionType = .Script,
 
     locals: [LOCALS_MAX]Local = undefined,
     local_count: u8 = 0,
     scope_depth: u8 = 0,
 
-    pub fn setup(self: *Compiler, vm: *VM, current: ?*Compiler, kind: FunctionType) !void {
+    pub fn setup(self: *Compiler, vm: *VM, current: ?*Compiler, kind: FunctionType, name: []const u8) !void {
         self.enclosing = current;
         self.fun_obj = try zlox.newFunction(vm);
         self.kind = kind;
 
+        if (kind != .Script) {
+            self.fun_obj.function.name = try zlox.copyString(vm, name);
+        }
+
         // Initialize the compiler's stack - claim slot 0 for the VM
         self.locals[0].name.lexeme = "";
         self.local_count = 1;
+        self.scope_depth = 0;
+    }
+
+    pub fn init(vm: *VM, current: ?*Compiler, kind: FunctionType, name: []const u8) !Compiler {
+        var compiler = Compiler{};
+        try compiler.setup(vm, current, kind, name);
+        return compiler;
     }
 };
 
@@ -92,15 +103,14 @@ pub const Parser = struct {
     lexer: Lexer = undefined,
     hadError: bool = false,
     panicMode: bool = false,
-    compiler: Compiler = Compiler{},
+    compiler: *Compiler = undefined,
 
     pub fn init(vm: *VM) !Self {
         return .{
             .alloc = vm.alloc,
             .vm = vm,
-            // .current = undefined,
-            // .previous = undefined,
-            // .compiler = try Compiler.init(vm, .Script),
+            .previous = Token{ .lexeme = "" },
+            .current = Token{ .lexeme = "" },
         };
     }
 
@@ -109,16 +119,20 @@ pub const Parser = struct {
         _ = self;
     }
 
+    /// Compile the given source code into bytecode within a Function object
     pub fn compile(self: *Self, input: []const u8) !*Object {
-        try self.compiler.setup(self.vm, null, .Script);
+        var compiler = try Compiler.init(self.vm, null, .Script, "");
+        self.compiler = &compiler;
         self.lexer = Lexer.init(input);
 
         self.hadError = false;
         self.panicMode = false;
 
+        self.current = Token{ .lexeme = "" }; // Ensure we have a valid starting line for debug printing
+
         self.advance();
 
-        self.emitConstant(zlox.NoneVal); // HACK until CallFrames implemented
+        // self.emitConstant(zlox.NoneVal); // HACK until CallFrames implemented
 
         while (!self.match(.EOF)) {
             self.declaration();
@@ -130,6 +144,7 @@ pub const Parser = struct {
         return fun_obj;
     }
 
+    /// Advance to the next valid token
     fn advance(self: *Self) void {
         self.previous = self.current;
 
@@ -146,6 +161,8 @@ pub const Parser = struct {
         }
     }
 
+    /// Consume the current token of the expected type and advance to the next
+    /// Report an error with the given message if the token is not of the expected type
     fn consume(self: *Self, kind: TokenType, error_msg: []const u8) void {
         if (self.current.kind == kind) {
             self.advance();
@@ -155,6 +172,7 @@ pub const Parser = struct {
         self.errorAtCurrent(error_msg);
     }
 
+    /// Check if the current token is the expected type
     fn check(self: Self, kind: TokenType) bool {
         return self.current.kind == kind;
     }
@@ -172,16 +190,23 @@ pub const Parser = struct {
         };
     }
 
+    /// Emit two bytes to the current Chunk being compiled
     fn emitBytes(self: *Self, byte1: u8, byte2: u8) void {
         self.emitByte(byte1);
         self.emitByte(byte2);
     }
 
-    // Emit a single opcode to the current Chunk being compiled
+    /// Emit a single opcode to the current Chunk being compiled
     fn emitOp(self: *Self, op: OpCode) void {
         self.emitByte(op.byte());
     }
 
+    /// Emit two opcodes to the current Chunk being compiled
+    fn emitOps(self: *Self, op1: OpCode, op2: OpCode) void {
+        self.emitBytes(op1.byte(), op2.byte());
+    }
+
+    /// Emit a Jump opcode to the current Chunk, using a placeholder offset
     fn emitJump(self: *Self, op: OpCode) usize {
         self.emitOp(op);
         self.emitByte(0xff);
@@ -189,6 +214,7 @@ pub const Parser = struct {
         return self.code().len - 2;
     }
 
+    /// Emit a Loop opcode to the current Chunk, jumping back to the given address
     fn emitLoop(self: *Self, loop_start: usize) void {
         self.emitOp(.OP_LOOP);
         const offset = self.code().len - loop_start + 2;
@@ -199,15 +225,13 @@ pub const Parser = struct {
         self.emitByte(@intCast(offset & 0xff));
     }
 
-    // Emit two opcodes to the current Chunk being compiled
-    fn emitOps(self: *Self, op1: OpCode, op2: OpCode) void {
-        self.emitBytes(op1.byte(), op2.byte());
-    }
-
     fn emitReturn(self: *Self) void {
+        self.emitOp(.OP_NIL);
         self.emitOp(.OP_RETURN);
     }
 
+    /// Add a constant Value to the Chunk's constants
+    /// Reports an error if there are more than the allowed number of constants
     fn makeConstant(self: *Self, value: Value) u8 {
         const idx = self.chunk().addConstant(value);
         if (idx > std.math.maxInt(u8)) {
@@ -218,10 +242,12 @@ pub const Parser = struct {
         return idx;
     }
 
+    /// Emit a Constant opcode and create a Constant value in the current Chunk
     fn emitConstant(self: *Self, value: Value) void {
         self.emitBytes(OpCode.OP_CONSTANT.byte(), self.makeConstant(value));
     }
 
+    /// Replace the placeholder Jump offset with a corrected address
     fn patchJump(self: *Self, offset: usize) void {
         const jump: usize = self.code().len - offset - 2;
         if (jump >= std.math.maxInt(u16)) {
@@ -232,27 +258,36 @@ pub const Parser = struct {
         self.code()[offset + 1] = @enumFromInt(jump & 0xff);
     }
 
+    /// Perform final cleanup of the compiled function
     fn endCompiler(self: *Self) *Object {
         self.emitReturn();
         var fun_obj: *Object = self.compiler.fun_obj;
 
         if (builtin.mode == .Debug and !self.hadError) {
             std.debug.assert(fun_obj.* == ObjType.function);
-            if (fun_obj.function.name.len > 0) {
-                zlox.disassembleChunk(self.chunk(), fun_obj.function.name);
+            if (fun_obj.function.name) |str_obj| {
+                zlox.disassembleChunk(self.chunk(), str_obj.string);
             } else {
                 zlox.disassembleChunk(self.chunk(), "<script>");
             }
         }
 
+        // Return scope to the enclosing compiler, unless we're in Script-scope
+        if (self.compiler.enclosing) |enclosing| {
+            self.compiler = enclosing;
+        }
+
         return fun_obj;
     }
 
+    /// Enter a new variable scope
     fn beginScope(self: *Self) void {
         self.compiler.scope_depth += 1;
     }
 
+    /// Leave the current variable scope
     fn endScope(self: *Self) void {
+        std.debug.assert(self.compiler.scope_depth > 0);
         self.compiler.scope_depth -= 1;
         std.debug.print("Ending current scope\n", .{});
 
@@ -264,6 +299,7 @@ pub const Parser = struct {
         }
     }
 
+    /// Parse a binary expression
     fn binary(self: *Self, can_assign: bool) void {
         _ = can_assign;
         const optype: TokenType = self.previous.kind;
@@ -285,6 +321,13 @@ pub const Parser = struct {
         }
     }
 
+    fn call(self: *Self, can_assign: bool) void {
+        _ = can_assign;
+        const argc: u8 = self.argumentList();
+        self.emitBytes(OpCode.OP_CALL.byte(), argc);
+    }
+
+    /// Parse a literal expression
     fn literal(self: *Self, can_assign: bool) void {
         _ = can_assign;
         switch (self.previous.kind) {
@@ -295,18 +338,22 @@ pub const Parser = struct {
         }
     }
 
+    /// Parse a grouped expression as "(<expr>)"
     pub fn grouping(self: *Self, can_assign: bool) void {
         _ = can_assign;
         self.expression();
         self.consume(.RIGHT_PAREN, "Expect ')' after expression");
     }
 
+    /// Parse a literal number value
     pub fn number(self: *Self, can_assign: bool) void {
         _ = can_assign;
         const value: f64 = std.fmt.parseFloat(f64, self.previous.lexeme) catch 0;
         self.emitConstant(Value{ .number = value });
     }
 
+    /// Parse a string literal
+    /// The VM owns the copied string memory
     pub fn string(self: *Self, can_assign: bool) void {
         _ = can_assign;
         // Copy string out of input buffer to a buffer owned by the Object
@@ -331,10 +378,8 @@ pub const Parser = struct {
 
         if (can_assign and self.match(.EQUAL)) {
             self.expression();
-            std.debug.print("{}\n", .{set_op});
             self.emitBytes(set_op.byte(), @intCast(arg));
         } else {
-            std.debug.print("{}\n", .{get_op});
             self.emitBytes(get_op.byte(), @intCast(arg));
         }
     }
@@ -385,19 +430,22 @@ pub const Parser = struct {
             self.errorMsg("Unable to copy string");
             return 0;
         };
-        return self.makeConstant(.{ .object = obj_str });
+        // DEBUGGING
+        // std.debug.print("identifierConstant: ", .{});
+        // zlox.printObject(obj_str.*);
+        // std.debug.print("\n", .{});
+        return self.makeConstant(Value{ .object = obj_str });
     }
 
     fn resolveLocal(self: *Self, name: Token) i16 {
-        var i: i16 = @as(i16, self.compiler.local_count) - 1;
-        while (i >= 0) : (i -= 1) {
-            const idx: usize = @intCast(i);
-            const local = self.compiler.locals[idx];
+        var i = self.compiler.local_count;
+        while (i > 0) : (i -= 1) {
+            const local = self.compiler.locals[i - 1];
             if (std.mem.eql(u8, name.lexeme, local.name.lexeme)) {
                 if (local.depth == -1) {
                     self.errorMsg("Can't read local variable in its own initializer");
                 }
-                return i;
+                return i - 1;
             }
         }
 
@@ -420,9 +468,9 @@ pub const Parser = struct {
         if (self.compiler.scope_depth == 0) return; // Globals are late-bound
 
         const name: Token = self.previous;
-        var i: i16 = @as(i16, self.compiler.local_count) - 1;
-        while (i >= 0) : (i -= 1) {
-            var local: *Local = &self.compiler.locals[@intCast(i)];
+        var i = self.compiler.local_count;
+        while (i > 0) : (i -= 1) {
+            var local: *Local = &self.compiler.locals[i - 1];
             if (local.depth != -1 and local.depth < self.compiler.scope_depth) {
                 break;
             }
@@ -452,8 +500,24 @@ pub const Parser = struct {
         self.emitBytes(OpCode.OP_DEFINE_GLOBAL.byte(), global);
     }
 
+    /// Initialize a *local* variable by defining its scope
     fn markInitialized(self: *Self) void {
+        if (self.compiler.scope_depth == 0) return;
         self.compiler.locals[self.compiler.local_count - 1].depth = self.compiler.scope_depth;
+    }
+
+    fn argumentList(self: *Self) u8 {
+        var argc: u8 = 0;
+        while (!self.check(.RIGHT_PAREN)) {
+            self.expression();
+            if (argc == 255) {
+                self.errorMsg("Cannot have more than 255 function arguments");
+            }
+            argc += 1;
+            if (!self.match(.COMMA)) break;
+        }
+        self.consume(.RIGHT_PAREN, "Expect ')' after function args");
+        return argc;
     }
 
     /// Skip the remaining condition expression if the preceding expression was falsey
@@ -486,23 +550,62 @@ pub const Parser = struct {
     }
 
     fn block(self: *Self) void {
-        std.debug.print("Begin block\n", .{});
         while (!self.check(.RIGHT_BRACE) and !self.check(.EOF)) {
-            std.debug.print("in block\n", .{});
             self.declaration();
         }
 
         self.consume(.RIGHT_BRACE, "Missing '}' after block");
     }
 
+    fn function(self: *Self, kind: FunctionType) void {
+        var compiler: Compiler = Compiler.init(self.vm, self.compiler, kind, self.previous.lexeme) catch {
+            self.errorMsg("Unable to allocate a new Function");
+            return;
+        };
+
+        self.compiler = &compiler;
+        self.beginScope();
+
+        self.consume(.LEFT_PAREN, "Expected '(' after function name");
+        while (!self.check(.RIGHT_PAREN)) args: {
+            compiler.fun_obj.function.arity += 1;
+            if (compiler.fun_obj.function.arity > 255) {
+                self.errorAtCurrent("Can't have more than 255 fun parameters");
+            }
+            const constant: u8 = self.parseVariable("Expect parameter name");
+            self.defineVariable(constant);
+
+            if (!self.match(.COMMA)) break :args;
+        }
+        self.consume(.RIGHT_PAREN, "Expected ')' after fun parameters");
+
+        if (!self.match(.LEFT_BRACE)) {
+            self.errorAtCurrent("Expected '{' to begin fun body");
+        }
+
+        self.block();
+
+        var fn_obj = self.endCompiler();
+        self.emitConstant(Value{ .object = fn_obj });
+    }
+
     fn declaration(self: *Self) void {
-        if (self.match(.VAR)) {
+        if (self.match(.FUN)) {
+            self.funDeclaration();
+        } else if (self.match(.VAR)) {
             self.varDeclaration();
         } else {
             self.statement();
         }
 
         if (self.panicMode) self.synchronize();
+    }
+
+    fn funDeclaration(self: *Self) void {
+        const global: u8 = self.parseVariable("Expected function name");
+        self.markInitialized();
+        self.function(.Function);
+        self.defineVariable(global);
     }
 
     fn varDeclaration(self: *Self) void {
@@ -531,6 +634,8 @@ pub const Parser = struct {
             self.whileStatement();
         } else if (self.match(.FOR)) {
             self.forStatement();
+        } else if (self.match(.RETURN)) {
+            self.returnStatement();
         } else {
             self.expressionStatement();
         }
@@ -545,7 +650,6 @@ pub const Parser = struct {
     fn expressionStatement(self: *Self) void {
         self.expression();
         self.consume(.SEMICOLON, "Expected ';' after expression");
-        std.debug.print("expr statement\n", .{});
         self.emitOp(.OP_POP);
     }
 
@@ -650,6 +754,20 @@ pub const Parser = struct {
         self.endScope();
     }
 
+    fn returnStatement(self: *Self) void {
+        if (self.compiler.kind == .Script) {
+            self.errorMsg("Returning from top-level code is not allowed");
+        }
+
+        if (self.match(.SEMICOLON)) {
+            self.emitReturn();
+        } else {
+            self.expression();
+            self.consume(.SEMICOLON, "Expected ';' after return value expression");
+            self.emitOp(.OP_RETURN);
+        }
+    }
+
     fn synchronize(self: *Self) void {
         self.panicMode = false;
         while (self.current.kind != .EOF) {
@@ -708,7 +826,7 @@ pub const Parser = struct {
 /// infix and prefix functions, with a precedence of NONE
 fn getParseRule(kind: TokenType) ParseRule {
     return switch (kind) {
-        .LEFT_PAREN => ParseRule.init(Parser.grouping, null, .NONE),
+        .LEFT_PAREN => ParseRule.init(Parser.grouping, Parser.call, .CALL),
         .MINUS => ParseRule.init(Parser.unary, Parser.binary, .TERM),
         .PLUS => ParseRule.init(null, Parser.binary, .TERM),
         .SLASH => ParseRule.init(null, Parser.binary, .FACTOR),

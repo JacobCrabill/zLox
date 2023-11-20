@@ -25,7 +25,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
     std.debug.print("{d:0>4}  ", .{offset});
     if (offset > 0 and chunk.lines.items[offset] == chunk.lines.items[offset - 1]) {
         std.debug.print("|     ", .{});
-    } else if (chunk.lines.items.len > 0) {
+    } else if (offset < chunk.lines.items.len) {
         std.debug.print("{d:<4}  ", .{chunk.lines.items[offset]});
     }
 
@@ -39,6 +39,7 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
         .OP_GET_LOCAL, .OP_SET_LOCAL => return byteInstruction(op, chunk, offset),
         .OP_JUMP_IF_FALSE, .OP_JUMP => return jumpInstruction(op, 1, chunk, offset),
         .OP_LOOP => return jumpInstruction(op, -1, chunk, offset),
+        .OP_CALL => return byteInstruction(op, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
@@ -79,24 +80,30 @@ pub fn printObject(obj: Object) void {
         switch (obj) {
             .string => |s| std.debug.print("Obj.String: '{s}'", .{s}),
             .function => |f| {
-                if (f.name.len > 0) {
-                    std.debug.print("Obj.Function: '{s}'", .{f.name});
+                if (f.name) |str_obj| {
+                    if (str_obj.string.len > 0) {
+                        std.debug.print("Obj.Function: '{s}'", .{str_obj.string});
+                    } else {
+                        std.debug.print("Obj.Function: '<invalid>'", .{});
+                    }
                 } else {
                     std.debug.print("Obj.Function: '<script>", .{});
                 }
             },
+            .native => std.debug.print("<native fn>", .{}),
         }
     } else {
         // Normal output for normal usage
         switch (obj) {
             .string => |s| std.debug.print("{s}", .{s}),
             .function => |f| {
-                if (f.name.len > 0) {
-                    std.debug.print("<fun {s}>", .{f.name});
+                if (f.name) |str_obj| {
+                    std.debug.print("<fun {s}>", .{str_obj.string});
                 } else {
                     std.debug.print("<script>", .{});
                 }
             },
+            .native => std.debug.print("<native fn>", .{}),
         }
     }
 }
