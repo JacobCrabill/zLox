@@ -25,28 +25,24 @@ const TrueVal = zlox.TrueVal;
 const FalseVal = zlox.FalseVal;
 
 /// TODO: Convert to std.error enum; use Zig error handling
-pub const LoxError = error{
-    OK,
-    COMPILE_ERROR,
-    RUNTIME_ERROR,
-};
+pub const LoxError = zlox.Error;
 
 pub const CallFrame = struct {
-    obj: *Object = undefined, // Pointer to the VM-owned Function object
+    obj: *Object = undefined, // Pointer to the VM-owned Closure object
     ip: usize = 0, // Instruction 'pointer' into the function's code chunk
-    slots: []Value = undefined,
+    slots: []Value = undefined, // Local stack for the call frame.  Points into VM's global stack.
     rbsp: usize = 0, // Stack base pointer prior to adding this CallFrame
     chunk: *Chunk = undefined, // Pointer to the function's Chunk
 
     /// Initialize a CallFrame
     /// 'function' must be a heap-allocated Function object
-    pub fn init(frame: *CallFrame, function: *Object, stack: []Value, stack_base: usize) void {
-        std.debug.assert(function.* == zlox.ObjType.function);
-        frame.obj = function;
+    pub fn init(frame: *CallFrame, closure: *Object, stack: []Value, stack_base: usize) void {
+        std.debug.assert(closure.* == zlox.ObjType.closure);
+        frame.obj = closure;
         frame.ip = 0;
         frame.slots = stack;
         frame.rbsp = stack_base;
-        frame.chunk = &function.function.chunk;
+        frame.chunk = &closure.closure.obj.function.chunk;
     }
 
     pub fn deinit(frame: *CallFrame) void {
@@ -89,6 +85,10 @@ pub const VM = struct {
             std.debug.print("Error defining native function: {any}\n", .{err});
         };
 
+        vm.defineNative("str", strBuiltin) catch |err| {
+            std.debug.print("Error defining native function: {any}\n", .{err});
+        };
+
         return vm;
     }
 
@@ -116,7 +116,7 @@ pub const VM = struct {
         while (i > 0) : (i -= 1) {
             const frame = &vm.frames[i - 1];
             const line: usize = frame.chunk.lines.items[frame.ip - 1];
-            const name = frame.obj.function.getName();
+            const name = frame.obj.closure.obj.function.getName();
             std.debug.print("[line {d}] in {s}\n", .{ line, name });
         }
         vm.resetStack();
@@ -129,9 +129,10 @@ pub const VM = struct {
         var fn_obj = try parser.compile(input);
 
         vm.push(Value{ .object = fn_obj });
-        if (!vm.call(fn_obj, 0)) {
-            return LoxError.RUNTIME_ERROR;
-        }
+        var closure = try zlox.newClosure(vm, fn_obj);
+        _ = vm.pop();
+        vm.push(Value{ .object = closure });
+        try vm.call(closure, 0);
 
         return vm.run();
     }
@@ -246,9 +247,12 @@ pub const VM = struct {
             },
             .OP_CALL => {
                 const argc = vm.readByte().byte();
-                if (!vm.callValue(vm.peek(argc), argc)) {
-                    return LoxError.RUNTIME_ERROR;
-                }
+                try vm.callValue(vm.peek(argc), argc);
+            },
+            .OP_CLOSURE => {
+                var fn_obj: *Object = vm.readConstant().object;
+                var closure = try zlox.newClosure(vm, fn_obj);
+                vm.push(Value{ .object = closure });
             },
             .OP_RETURN => {
                 var result = vm.pop();
@@ -347,16 +351,19 @@ pub const VM = struct {
 
     /// Assume the given Value is a function to be called.
     /// Return false if it is not a function, or if calling it fails.
-    fn callValue(vm: *VM, callee: Value, argc: u8) bool {
+    fn callValue(vm: *VM, callee: Value, argc: u8) !void {
         switch (callee) {
             .object => |obj| {
                 switch (obj.*) {
-                    .function => |_| return vm.call(obj, argc),
+                    .closure => |_| {
+                        try vm.call(obj, argc);
+                        return;
+                    },
                     .native => |native| {
-                        const result: Value = native(argc, vm.stack[vm.stackTop - argc ..]);
+                        const result: Value = try native(vm, argc, vm.stack[vm.stackTop - argc ..]);
                         vm.stackTop -= argc + 1;
                         vm.push(result);
-                        return true;
+                        return;
                     },
                     else => {},
                 }
@@ -364,32 +371,31 @@ pub const VM = struct {
             else => {},
         }
 
-        vm.runtimeError("Can only call functions and classes", .{});
-        return false;
+        vm.runtimeError("Can only call function closures and classes", .{});
+        return LoxError.RUNTIME_ERROR;
     }
 
-    /// Call the given Function object (the Object is already known to be a Function)
-    fn call(vm: *VM, fun_obj: *Object, argc: u8) bool {
-        if (argc != fun_obj.function.arity) {
+    /// Call the given Closure's Function object (the Object is already known to be a Closure)
+    fn call(vm: *VM, obj: *Object, argc: u8) !void {
+        var function: *zlox.Function = &obj.closure.obj.function;
+        if (argc != function.arity) {
             vm.runtimeError("Function {s} expected {d} arguments but given {d}", .{
-                fun_obj.function.getName(),
-                fun_obj.function.arity,
+                function.getName(),
+                function.arity,
                 argc,
             });
-            return false;
+            return LoxError.RUNTIME_ERROR;
         }
 
         if (vm.frameCount == VM.FRAMES_MAX) {
             vm.runtimeError("Stack overflow", .{});
-            return false;
+            return LoxError.RUNTIME_ERROR;
         }
 
         var frame: *CallFrame = &vm.frames[vm.frameCount];
         vm.frameCount += 1;
         const rbsp = vm.stackTop - argc - 1;
-        frame.init(fun_obj, vm.stack[rbsp..], rbsp);
-
-        return true;
+        frame.init(obj, vm.stack[rbsp..], rbsp);
     }
 
     /// Add a native function to our globals
@@ -436,9 +442,51 @@ pub const VM = struct {
 ///////////////////////////////////////////////////////////////////////////////
 
 /// Get the current system time in seconds
-pub fn clockNative(argc: u8, argv: []Value) Value {
+pub fn clockNative(vm: *VM, argc: u8, argv: []Value) zlox.Error!Value {
+    _ = vm;
     _ = argc;
     _ = argv;
     var micros: f64 = @floatFromInt(std.time.microTimestamp());
     return Value{ .number = micros / 1e6 };
+}
+
+pub fn strBuiltin(vm: *VM, argc: u8, argv: []Value) zlox.Error!Value {
+    if (argc != 1) return NoneVal;
+    const val = argv[0];
+    var str: []const u8 = switch (val) {
+        .number => |num| try std.fmt.allocPrint(vm.alloc, "'{d:.3}'", .{num}),
+        .bool => |b| try std.fmt.allocPrint(vm.alloc, "'{}'", .{b}),
+        .none => try std.fmt.allocPrint(vm.alloc, "'none'", .{}),
+        .object => |obj| blk: {
+            if (obj.* == zlox.ObjType.string) {
+                // If it's already a String object, just return the Value
+                return val;
+            } else {
+                break :blk try strObject(vm.alloc, obj.*);
+            }
+        },
+    };
+    return Value{ .object = try zlox.createString(vm, str) };
+}
+
+/// Convert an Object to a string Object
+pub fn strObject(alloc: Allocator, obj: Object) zlox.Error![]const u8 {
+    switch (obj) {
+        .function => |f| {
+            if (f.name) |str_obj| {
+                return try std.fmt.allocPrint(alloc, "<fun {s}>", .{str_obj.string});
+            } else {
+                return try std.fmt.allocPrint(alloc, "<script>", .{});
+            }
+        },
+        .closure => |f| {
+            if (f.obj.function.name) |str_obj| {
+                return try std.fmt.allocPrint(alloc, "<fun {s}>", .{str_obj.string});
+            } else {
+                return try std.fmt.allocPrint(alloc, "<script>", .{});
+            }
+        },
+        .native => return try std.fmt.allocPrint(alloc, "<native fn>", .{}),
+        else => return LoxError.RUNTIME_ERROR, // can't happen
+    }
 }

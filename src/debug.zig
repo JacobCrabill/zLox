@@ -40,11 +40,12 @@ pub fn disassembleInstruction(chunk: *const Chunk, offset: usize) usize {
         .OP_JUMP_IF_FALSE, .OP_JUMP => return jumpInstruction(op, 1, chunk, offset),
         .OP_LOOP => return jumpInstruction(op, -1, chunk, offset),
         .OP_CALL => return byteInstruction(op, chunk, offset),
+        .OP_CLOSURE => return closureInstruction(op, chunk, offset),
         else => return simpleInstruction(op, offset),
     }
 }
 
-pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
+fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
     const constant: u8 = chunk.code.items[offset + 1].byte();
     const value: Value = chunk.constants.items[constant];
 
@@ -55,7 +56,18 @@ pub fn constantInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize
     return offset + 2;
 }
 
-pub fn byteInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
+fn closureInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
+    const constant: u8 = chunk.code.items[offset + 1].byte();
+    const value: Value = chunk.constants.items[constant];
+
+    std.debug.print("{s:<16}  {d:>4}\n", .{ @tagName(op), constant });
+    printValue(value);
+    std.debug.print("\n", .{});
+
+    return offset + 2;
+}
+
+fn byteInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
     const slot: u8 = chunk.code.items[offset + 1].byte();
     std.debug.print("{s:<16}  {d:>4}\n", .{ @tagName(op), slot });
     return offset + 2;
@@ -69,7 +81,7 @@ fn jumpInstruction(op: OpCode, sign: i8, chunk: *const Chunk, offset: usize) usi
     return offset + 3;
 }
 
-pub fn simpleInstruction(op: OpCode, offset: usize) usize {
+fn simpleInstruction(op: OpCode, offset: usize) usize {
     std.debug.print("{s:<16}\n", .{@tagName(op)});
     return offset + 1;
 }
@@ -90,6 +102,17 @@ pub fn printObject(obj: Object) void {
                     std.debug.print("Obj.Function: '<script>", .{});
                 }
             },
+            .closure => |f| {
+                if (f.obj.function.name) |str_obj| {
+                    if (str_obj.string.len > 0) {
+                        std.debug.print("Obj.Closure: '{s}'", .{str_obj.string});
+                    } else {
+                        std.debug.print("Obj.Closure: '<invalid>'", .{});
+                    }
+                } else {
+                    std.debug.print("Obj.Closure: '<script>", .{});
+                }
+            },
             .native => std.debug.print("<native fn>", .{}),
         }
     } else {
@@ -98,6 +121,13 @@ pub fn printObject(obj: Object) void {
             .string => |s| std.debug.print("{s}", .{s}),
             .function => |f| {
                 if (f.name) |str_obj| {
+                    std.debug.print("<fun {s}>", .{str_obj.string});
+                } else {
+                    std.debug.print("<script>", .{});
+                }
+            },
+            .closure => |f| {
+                if (f.obj.function.name) |str_obj| {
                     std.debug.print("<fun {s}>", .{str_obj.string});
                 } else {
                     std.debug.print("<script>", .{});

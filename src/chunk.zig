@@ -36,6 +36,7 @@ pub const OpCode = enum(u8) {
     OP_JUMP,
     OP_LOOP,
     OP_CALL,
+    OP_CLOSURE,
     OP_RETURN,
     _, // open enum to handle invalid opcodes in our program
 

@@ -132,8 +132,6 @@ pub const Parser = struct {
 
         self.advance();
 
-        // self.emitConstant(zlox.NoneVal); // HACK until CallFrames implemented
-
         while (!self.match(.EOF)) {
             self.declaration();
         }
@@ -261,11 +259,11 @@ pub const Parser = struct {
     /// Perform final cleanup of the compiled function
     fn endCompiler(self: *Self) *Object {
         self.emitReturn();
-        var fun_obj: *Object = self.compiler.fun_obj;
+        var fn_obj: *Object = self.compiler.fun_obj;
 
         if (builtin.mode == .Debug and !self.hadError) {
-            std.debug.assert(fun_obj.* == ObjType.function);
-            if (fun_obj.function.name) |str_obj| {
+            std.debug.assert(fn_obj.* == ObjType.function);
+            if (fn_obj.function.name) |str_obj| {
                 zlox.disassembleChunk(self.chunk(), str_obj.string);
             } else {
                 zlox.disassembleChunk(self.chunk(), "<script>");
@@ -277,7 +275,7 @@ pub const Parser = struct {
             self.compiler = enclosing;
         }
 
-        return fun_obj;
+        return fn_obj;
     }
 
     /// Enter a new variable scope
@@ -586,7 +584,7 @@ pub const Parser = struct {
         self.block();
 
         var fn_obj = self.endCompiler();
-        self.emitConstant(Value{ .object = fn_obj });
+        self.emitBytes(OpCode.OP_CLOSURE.byte(), self.makeConstant(Value{ .object = fn_obj }));
     }
 
     fn declaration(self: *Self) void {

@@ -1,35 +1,12 @@
-// var x = "Hello";
-// var y = "World!";
-// print x + " " + y;
-
-{
-  var foo = 9;
-  foo = 11;
-  // print foo;
-  // var bar = 10;
-  // print bar / foo;
-  // foo = 10;
-  // print foo / bar;
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 2) + fib(n - 1);
 }
 
-// if (false or true) {
-//   print "Hello, World!";
-//   print "We can have multiple lines in a block.";
-// } else {
-//   print "unreachable";
-// }
-// 
-// var z = 10;
-// while (z >= 0) {
-//   z = z - 1;
-//   print z;
-// }
-// print "Loop done!";
-// 
-// for (var i = 0; i < 10; i = i + 1) {
-//   print "For loop:";
-//   print i;
-// }
-// 
-// // foo      // error: expected ';' at end of expression
-// // print baz;  // Undefined variable: 'baz'
+var n = 35;
+
+var start = clock();
+var res = fib(n);
+var stop = clock();
+print "Elapsed time in seconds: " + str(stop - start);
+print "Answer: " + str(res);

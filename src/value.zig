@@ -16,6 +16,7 @@ pub const ValueType = enum(u8) {
 pub const ObjType = enum(u8) {
     string,
     function,
+    closure,
     native,
 };
 
@@ -38,6 +39,7 @@ pub const Value = union(ValueType) {
 pub const Object = union(ObjType) {
     string: []const u8,
     function: Function,
+    closure: Closure,
     native: NativeFn,
 
     pub fn deinit(obj: *Object, alloc: Allocator) void {
@@ -63,7 +65,18 @@ pub const Function = struct {
     }
 };
 
-pub const NativeFn = *const fn (argc: u8, argv: []Value) Value;
+pub const Closure = struct {
+    obj: *Object = undefined, // Function object pointer
+};
+
+pub const Error = error{
+    OK,
+    COMPILE_ERROR,
+    RUNTIME_ERROR,
+    OutOfMemory, // zig std lib
+};
+
+pub const NativeFn = *const fn (vm: *VM, argc: u8, argv: []Value) Error!Value;
 
 pub const NoneVal: Value = Value{ .none = {} };
 pub const TrueVal: Value = Value{ .bool = true };
@@ -114,23 +127,26 @@ pub fn objectsEqual(a: Object, b: Object) bool {
 
     switch (a) {
         .string => |s| return std.mem.eql(u8, s, b.string),
-        .function => |f| {
-            // Compare function names
-            // Empty names mean script scope
-            if (f.name) |aname| {
-                if (b.function.name) |bname| {
-                    return std.mem.eql(u8, aname.string, bname.string);
-                } else {
-                    return false;
-                }
-            }
-            if (b.function.name) |_| return false;
-            return true;
-        },
+        .function => |*f| return functionsEqual(f, &b.function),
+        .closure => |c| return functionsEqual(&c.obj.function, &b.closure.obj.function),
         .native => |native| {
             return @intFromPtr(native) == @intFromPtr(b.native);
         },
     }
+}
+
+/// Compare two Function objects (by name)
+fn functionsEqual(a: *const Function, b: *const Function) bool {
+    // Empty names mean script scope
+    if (a.name) |aname| {
+        if (b.name) |bname| {
+            return std.mem.eql(u8, aname.string, bname.string);
+        } else {
+            return false;
+        }
+    }
+    if (b.name) |_| return false;
+    return true;
 }
 
 /// Allocate a new Object on the heap, adding it to our global objects list
@@ -147,6 +163,12 @@ pub fn createObject(vm: *VM, obj: Object) !*Object {
 pub fn newFunction(vm: *VM) !*Object {
     var fun = Function{ .chunk = Chunk.init(vm.alloc) };
     return try createObject(vm, Object{ .function = fun });
+}
+
+/// Allocate a new Object on the heap of type 'Closure'
+/// The new closure takes ownership of the given Function object
+pub fn newClosure(vm: *VM, function: *Object) !*Object {
+    return try createObject(vm, Object{ .closure = .{ .obj = function } });
 }
 
 /// Allocate a new Object on the heap of type 'NativeFn'
