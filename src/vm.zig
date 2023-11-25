@@ -19,6 +19,7 @@ const Compiler = zlox.Compiler;
 const OpCode = zlox.OpCode;
 const Value = zlox.Value;
 const Object = zlox.Object;
+const Closure = zlox.Closure;
 const NativeFn = zlox.NativeFn;
 const NoneVal = zlox.NoneVal;
 const TrueVal = zlox.TrueVal;
@@ -153,7 +154,7 @@ pub const VM = struct {
 
     pub fn run(vm: *VM) !void {
         while (true) {
-            if (builtin.mode == .Debug) {
+            if (zlox.verbosity == .Verbose) {
                 vm.printStack();
             }
 
@@ -207,6 +208,14 @@ pub const VM = struct {
                 frame.slots[slot] = vm.peek(0);
             },
             .OP_DEFINE_GLOBAL => try vm.defineGlobal(),
+            .OP_GET_UPVALUE => {
+                const slot: u8 = vm.readByte().byte();
+                vm.push(vm.currentFrame().obj.closure.upvalues.items[slot].upvalue.location.*);
+            },
+            .OP_SET_UPVALUE => {
+                const slot: u8 = vm.readByte().byte();
+                vm.currentFrame().obj.closure.upvalues.items[slot].upvalue.location.* = vm.peek(0);
+            },
             .OP_EQUAL => {
                 const a = vm.pop();
                 const b = vm.pop();
@@ -251,8 +260,22 @@ pub const VM = struct {
             },
             .OP_CLOSURE => {
                 var fn_obj: *Object = vm.readConstant().object;
-                var closure = try zlox.newClosure(vm, fn_obj);
-                vm.push(Value{ .object = closure });
+                var obj_closure = try zlox.newClosure(vm, fn_obj);
+                vm.push(Value{ .object = obj_closure });
+
+                var closure: *Closure = &obj_closure.closure;
+                var i: u8 = 0;
+                while (i < closure.upvalueCount) : (i += 1) {
+                    const isLocal: bool = (vm.readByte().byte() == 1);
+                    const idx: u8 = vm.readByte().byte();
+                    var upvalue: *Object = undefined;
+                    if (isLocal) {
+                        upvalue = try zlox.captureUpvalue(vm, &vm.currentFrame().slots[idx]);
+                    } else {
+                        upvalue = vm.currentFrame().obj.closure.upvalues.items[idx];
+                    }
+                    closure.upvalues.appendAssumeCapacity(upvalue);
+                }
             },
             .OP_RETURN => {
                 var result = vm.pop();

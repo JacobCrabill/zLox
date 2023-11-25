@@ -56,12 +56,18 @@ pub const Local = struct {
     depth: i16 = 0,
 };
 
+pub const Upvalue = struct {
+    idx: u8 = 0,
+    isLocal: bool = false,
+};
+
 pub const FunctionType = enum(u8) {
     Function,
     Script,
 };
 
 const LOCALS_MAX: u32 = 256;
+const UPVALUES_MAX: u32 = 256;
 
 pub const Compiler = struct {
     enclosing: ?*Compiler = null,
@@ -71,6 +77,8 @@ pub const Compiler = struct {
     locals: [LOCALS_MAX]Local = undefined,
     local_count: u8 = 0,
     scope_depth: u8 = 0,
+
+    upvalues: [UPVALUES_MAX]Upvalue = undefined,
 
     pub fn setup(self: *Compiler, vm: *VM, current: ?*Compiler, kind: FunctionType, name: []const u8) !void {
         self.enclosing = current;
@@ -261,7 +269,7 @@ pub const Parser = struct {
         self.emitReturn();
         var fn_obj: *Object = self.compiler.fun_obj;
 
-        if (builtin.mode == .Debug and !self.hadError) {
+        if (zlox.verbosity != .Silent and !self.hadError) {
             std.debug.assert(fn_obj.* == ObjType.function);
             if (fn_obj.function.name) |str_obj| {
                 zlox.disassembleChunk(self.chunk(), str_obj.string);
@@ -287,7 +295,6 @@ pub const Parser = struct {
     fn endScope(self: *Self) void {
         std.debug.assert(self.compiler.scope_depth > 0);
         self.compiler.scope_depth -= 1;
-        std.debug.print("Ending current scope\n", .{});
 
         while (self.compiler.local_count > 0 and
             self.compiler.locals[self.compiler.local_count - 1].depth > self.compiler.scope_depth)
@@ -364,13 +371,22 @@ pub const Parser = struct {
     }
 
     fn namedVariable(self: *Self, token: Token, can_assign: bool) void {
-        var get_op: OpCode = .OP_GET_LOCAL;
-        var set_op: OpCode = .OP_SET_LOCAL;
-        var arg: i16 = self.resolveLocal(token);
+        var get_op: OpCode = .OP_GET_GLOBAL;
+        var set_op: OpCode = .OP_SET_GLOBAL;
+        var arg: u8 = undefined;
 
-        if (arg < 0) {
-            get_op = .OP_GET_GLOBAL;
-            set_op = .OP_SET_GLOBAL;
+        if (self.resolveLocal(self.compiler, token)) |idx| {
+            // Local variable
+            arg = idx;
+            get_op = .OP_GET_LOCAL;
+            set_op = .OP_SET_LOCAL;
+        } else if (self.resolveUpvalue(self.compiler, token)) |idx| {
+            // Upvalue
+            arg = idx;
+            get_op = .OP_GET_UPVALUE;
+            set_op = .OP_SET_UPVALUE;
+        } else {
+            // Global variable
             arg = self.identifierConstant(token);
         }
 
@@ -428,17 +444,13 @@ pub const Parser = struct {
             self.errorMsg("Unable to copy string");
             return 0;
         };
-        // DEBUGGING
-        // std.debug.print("identifierConstant: ", .{});
-        // zlox.printObject(obj_str.*);
-        // std.debug.print("\n", .{});
         return self.makeConstant(Value{ .object = obj_str });
     }
 
-    fn resolveLocal(self: *Self, name: Token) i16 {
-        var i = self.compiler.local_count;
+    fn resolveLocal(self: *Self, compiler: *Compiler, name: Token) ?u8 {
+        var i = compiler.local_count;
         while (i > 0) : (i -= 1) {
-            const local = self.compiler.locals[i - 1];
+            const local = compiler.locals[i - 1];
             if (std.mem.eql(u8, name.lexeme, local.name.lexeme)) {
                 if (local.depth == -1) {
                     self.errorMsg("Can't read local variable in its own initializer");
@@ -447,7 +459,19 @@ pub const Parser = struct {
             }
         }
 
-        return -1;
+        return null;
+    }
+
+    fn resolveUpvalue(self: *Self, compiler: *Compiler, name: Token) ?u8 {
+        if (compiler.enclosing == null) return null;
+
+        if (self.resolveLocal(compiler.enclosing.?, name)) |idx| {
+            return self.addUpvalue(compiler, idx, true);
+        } else if (self.resolveUpvalue(compiler.enclosing.?, name)) |idx| {
+            return self.addUpvalue(compiler, idx, false);
+        }
+
+        return null;
     }
 
     fn addLocal(self: *Self, token: Token) void {
@@ -460,6 +484,27 @@ pub const Parser = struct {
         local.name = token;
         local.depth = -1;
         self.compiler.local_count += 1;
+    }
+
+    fn addUpvalue(self: *Self, compiler: *Compiler, idx: u8, isLocal: bool) u8 {
+        const count: u8 = compiler.fun_obj.function.upvalueCount;
+
+        for (compiler.upvalues, 0..) |upvalue, i| {
+            if (i >= count) break;
+            if (upvalue.idx == idx and upvalue.isLocal == isLocal)
+                return @intCast(i);
+        }
+
+        if (count == UPVALUES_MAX) {
+            self.errorMsg("Too many closure variables in function");
+            return 0;
+        }
+
+        compiler.upvalues[count].isLocal = isLocal;
+        compiler.upvalues[count].idx = idx;
+        compiler.fun_obj.function.upvalueCount += 1;
+
+        return count;
     }
 
     fn declareVariable(self: *Self) void {
@@ -585,6 +630,11 @@ pub const Parser = struct {
 
         var fn_obj = self.endCompiler();
         self.emitBytes(OpCode.OP_CLOSURE.byte(), self.makeConstant(Value{ .object = fn_obj }));
+        for (compiler.upvalues, 0..) |upvalue, i| {
+            if (i >= fn_obj.function.upvalueCount) break;
+            self.emitByte(if (upvalue.isLocal) 1 else 0);
+            self.emitByte(upvalue.idx);
+        }
     }
 
     fn declaration(self: *Self) void {

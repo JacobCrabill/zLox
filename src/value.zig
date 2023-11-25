@@ -3,6 +3,7 @@ const VM = @import("vm.zig").VM;
 const Chunk = @import("chunk.zig").Chunk;
 
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 
 /// Enum for Value types
 pub const ValueType = enum(u8) {
@@ -15,6 +16,7 @@ pub const ValueType = enum(u8) {
 /// Enum for Object types
 pub const ObjType = enum(u8) {
     string,
+    upvalue,
     function,
     closure,
     native,
@@ -38,14 +40,18 @@ pub const Value = union(ValueType) {
 /// Objects are Values which live on the heap
 pub const Object = union(ObjType) {
     string: []const u8,
+    upvalue: Upvalue,
     function: Function,
     closure: Closure,
     native: NativeFn,
 
+    /// Deinit (free) any resources stored within the Object
+    /// The Object itself is free'd outside
     pub fn deinit(obj: *Object, alloc: Allocator) void {
         switch (obj.*) {
             .string => alloc.free(obj.string),
             .function => |*f| f.chunk.deinit(),
+            .closure => |*c| c.upvalues.deinit(),
             else => {},
         }
     }
@@ -54,6 +60,7 @@ pub const Object = union(ObjType) {
 pub const Function = struct {
     arity: usize = 0,
     chunk: Chunk = undefined,
+    upvalueCount: u8 = 0,
     name: ?*Object = null, // String object containing the function name (if not script)
 
     pub fn getName(fun: Function) []const u8 {
@@ -66,7 +73,13 @@ pub const Function = struct {
 };
 
 pub const Closure = struct {
-    obj: *Object = undefined, // Function object pointer
+    obj: *Object = undefined, // Function Object pointer
+    upvalues: ArrayList(*Object), // TODO: Consider ArrayList(?*Upvalue)
+    upvalueCount: u8 = 0,
+};
+
+pub const Upvalue = struct {
+    location: *Value = undefined,
 };
 
 pub const Error = error{
@@ -127,6 +140,7 @@ pub fn objectsEqual(a: Object, b: Object) bool {
 
     switch (a) {
         .string => |s| return std.mem.eql(u8, s, b.string),
+        .upvalue => |u| return @intFromPtr(u.location) == @intFromPtr(b.upvalue.location),
         .function => |*f| return functionsEqual(f, &b.function),
         .closure => |c| return functionsEqual(&c.obj.function, &b.closure.obj.function),
         .native => |native| {
@@ -167,8 +181,24 @@ pub fn newFunction(vm: *VM) !*Object {
 
 /// Allocate a new Object on the heap of type 'Closure'
 /// The new closure takes ownership of the given Function object
-pub fn newClosure(vm: *VM, function: *Object) !*Object {
-    return try createObject(vm, Object{ .closure = .{ .obj = function } });
+pub fn newClosure(vm: *VM, fn_obj: *Object) !*Object {
+    var closure = Closure{
+        .obj = fn_obj,
+        .upvalues = ArrayList(*Object).init(vm.alloc),
+        .upvalueCount = fn_obj.function.upvalueCount,
+    };
+    try closure.upvalues.ensureTotalCapacity(fn_obj.function.upvalueCount);
+    return try createObject(vm, Object{ .closure = closure });
+}
+
+/// Create a new Upvalue Object from the given Value pointer
+pub fn newUpvalue(vm: *VM, ptr: *Value) !*Object {
+    return try createObject(vm, Object{ .upvalue = .{ .location = ptr } });
+}
+
+/// Capture a new Upvalue from a local Value
+pub fn captureUpvalue(vm: *VM, local: *Value) !*Object {
+    return try newUpvalue(vm, local);
 }
 
 /// Allocate a new Object on the heap of type 'NativeFn'
