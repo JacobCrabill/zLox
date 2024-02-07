@@ -23,10 +23,10 @@ const log = zlox.log;
 
 pub fn main() !u8 {
     var gpa = GPA{};
-    var alloc = gpa.allocator();
-    defer _ = gpa.deinit(); // release all memory and check for leaks
+    const alloc = gpa.allocator();
+    defer _ = gpa.deinit(); // release all memory and check for leaks. TODO: throws error in ReleaseSafe?
 
-    var args = try std.process.argsAlloc(alloc);
+    const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
 
     if (args.len > 2) {
@@ -47,9 +47,9 @@ pub fn main() !u8 {
 fn runFile(path: []const u8, alloc: Allocator) !void {
     // Read file into memory
     var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-    var realpath = try std.fs.realpath(path, &path_buf);
+    const realpath = try std.fs.realpath(path, &path_buf);
     var lox_file: File = try std.fs.openFileAbsolute(realpath, .{});
-    var lox_text = try lox_file.readToEndAlloc(alloc, 1e9);
+    const lox_text = try lox_file.readToEndAlloc(alloc, 1e9);
     defer alloc.free(lox_text);
 
     var vm = VM.init(alloc);
@@ -63,7 +63,7 @@ fn runFile(path: []const u8, alloc: Allocator) !void {
 ////////////////////////////////////////////////////////////////////////////////
 
 test "basic ops" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
     var vm = VM.init(alloc);
     defer vm.deinit();
     var chunk = Chunk.init(alloc);

@@ -1,0 +1,25 @@
+fun outer() {
+  print "Create middle";
+  var a = 1;
+  var b = 2;
+  fun middle() {
+    print "Create inner";
+    var c = 3;
+    var d = 4;
+    fun inner() {
+      print a;
+      print b;
+      print c;
+      print d;
+      print a + c + b + d;
+    }
+
+    return inner;
+  }
+
+  return middle;
+}
+
+var mid = outer();
+var in = mid();
+in();

@@ -109,7 +109,7 @@ fn byteInstruction(op: OpCode, chunk: *const Chunk, offset: usize) usize {
 }
 
 fn jumpInstruction(op: OpCode, sign: i8, chunk: *const Chunk, offset: usize) usize {
-    var jump: u16 = (@as(u16, chunk.code.items[offset + 1].byte()) << 8) | chunk.code.items[offset + 2].byte();
+    const jump: u16 = (@as(u16, chunk.code.items[offset + 1].byte()) << 8) | chunk.code.items[offset + 2].byte();
     var dest: i64 = @intCast(offset + 3);
     dest += @as(i64, sign) * jump;
     std.debug.print("{s:<16} {d:>4} -> {d:<4}\n", .{ @tagName(op), offset, dest });

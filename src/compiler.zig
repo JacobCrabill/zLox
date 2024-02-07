@@ -54,6 +54,7 @@ const ParseFn = *const fn (*Parser, bool) void;
 pub const Local = struct {
     name: Token = undefined,
     depth: i16 = 0,
+    isCaptured: bool = false,
 };
 
 pub const Upvalue = struct {
@@ -90,7 +91,10 @@ pub const Compiler = struct {
         }
 
         // Initialize the compiler's stack - claim slot 0 for the VM
-        self.locals[0].name.lexeme = "";
+        var local: *Local = &self.locals[0];
+        local.name.lexeme = "";
+        local.depth = 0;
+        local.isCaptured = false;
         self.local_count = 1;
         self.scope_depth = 0;
     }
@@ -144,7 +148,7 @@ pub const Parser = struct {
             self.declaration();
         }
 
-        var fun_obj = self.endCompiler();
+        const fun_obj = self.endCompiler();
 
         if (self.hadError) return error.CompileError;
         return fun_obj;
@@ -267,7 +271,7 @@ pub const Parser = struct {
     /// Perform final cleanup of the compiled function
     fn endCompiler(self: *Self) *Object {
         self.emitReturn();
-        var fn_obj: *Object = self.compiler.fun_obj;
+        const fn_obj: *Object = self.compiler.fun_obj;
 
         if (zlox.verbosity != .Silent and !self.hadError) {
             std.debug.assert(fn_obj.* == ObjType.function);
@@ -299,7 +303,11 @@ pub const Parser = struct {
         while (self.compiler.local_count > 0 and
             self.compiler.locals[self.compiler.local_count - 1].depth > self.compiler.scope_depth)
         {
-            self.emitOp(.OP_POP);
+            if (self.compiler.locals[self.compiler.local_count - 1].isCaptured) {
+                self.emitOp(.OP_CLOSE_UPVALUE);
+            } else {
+                self.emitOp(.OP_POP);
+            }
             self.compiler.local_count -= 1;
         }
     }
@@ -308,7 +316,7 @@ pub const Parser = struct {
     fn binary(self: *Self, can_assign: bool) void {
         _ = can_assign;
         const optype: TokenType = self.previous.kind;
-        var rule: ParseRule = getParseRule(optype);
+        const rule: ParseRule = getParseRule(optype);
         self.parsePrecedence(@enumFromInt(@intFromEnum(rule.precedence) + 1));
 
         switch (optype) {
@@ -363,7 +371,7 @@ pub const Parser = struct {
         _ = can_assign;
         // Copy string out of input buffer to a buffer owned by the Object
         const raw_str = self.previous.lexeme[1 .. self.previous.lexeme.len - 1];
-        var obj_str = zlox.copyString(self.vm, raw_str) catch {
+        const obj_str = zlox.copyString(self.vm, raw_str) catch {
             self.errorMsg("Unable to copy string");
             return;
         };
@@ -440,7 +448,7 @@ pub const Parser = struct {
     }
 
     fn identifierConstant(self: *Self, token: Token) u8 {
-        var obj_str: *Object = zlox.copyString(self.vm, token.lexeme) catch {
+        const obj_str: *Object = zlox.copyString(self.vm, token.lexeme) catch {
             self.errorMsg("Unable to copy string");
             return 0;
         };
@@ -464,10 +472,12 @@ pub const Parser = struct {
 
     fn resolveUpvalue(self: *Self, compiler: *Compiler, name: Token) ?u8 {
         if (compiler.enclosing == null) return null;
+        var enclosing: *Compiler = compiler.enclosing.?;
 
-        if (self.resolveLocal(compiler.enclosing.?, name)) |idx| {
-            return self.addUpvalue(compiler, idx, true);
-        } else if (self.resolveUpvalue(compiler.enclosing.?, name)) |idx| {
+        if (self.resolveLocal(enclosing, name)) |local| {
+            enclosing.locals[local].isCaptured = true;
+            return self.addUpvalue(compiler, local, true);
+        } else if (self.resolveUpvalue(enclosing, name)) |idx| {
             return self.addUpvalue(compiler, idx, false);
         }
 
@@ -483,6 +493,7 @@ pub const Parser = struct {
         var local: *Local = &self.compiler.locals[self.compiler.local_count];
         local.name = token;
         local.depth = -1;
+        local.isCaptured = false;
         self.compiler.local_count += 1;
     }
 
@@ -511,9 +522,9 @@ pub const Parser = struct {
         if (self.compiler.scope_depth == 0) return; // Globals are late-bound
 
         const name: Token = self.previous;
-        var i = self.compiler.local_count;
+        var i: u8 = self.compiler.local_count;
         while (i > 0) : (i -= 1) {
-            var local: *Local = &self.compiler.locals[i - 1];
+            const local: *Local = &self.compiler.locals[i - 1];
             if (local.depth != -1 and local.depth < self.compiler.scope_depth) {
                 break;
             }
@@ -628,7 +639,7 @@ pub const Parser = struct {
 
         self.block();
 
-        var fn_obj = self.endCompiler();
+        const fn_obj = self.endCompiler();
         self.emitBytes(OpCode.OP_CLOSURE.byte(), self.makeConstant(Value{ .object = fn_obj }));
         for (compiler.upvalues, 0..) |upvalue, i| {
             if (i >= fn_obj.function.upvalueCount) break;

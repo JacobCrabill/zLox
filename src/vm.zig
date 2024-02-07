@@ -24,6 +24,7 @@ const NativeFn = zlox.NativeFn;
 const NoneVal = zlox.NoneVal;
 const TrueVal = zlox.TrueVal;
 const FalseVal = zlox.FalseVal;
+const Upvalue = zlox.Upvalue;
 
 /// TODO: Convert to std.error enum; use Zig error handling
 pub const LoxError = zlox.Error;
@@ -59,6 +60,7 @@ pub const VM = struct {
     stackTop: usize = 0,
     frames: [FRAMES_MAX]CallFrame = undefined,
     frameCount: u8 = 0,
+    openUpvalues: ?*Object = null,
     objects: ArrayList(*Object), // All heap-allocated Objects owned by the VM
     globals: ValueMap, // TODO: Custom hashmap with owned keys
     global_names: BufSet,
@@ -108,6 +110,8 @@ pub const VM = struct {
 
     pub fn resetStack(vm: *VM) void {
         vm.stackTop = 0;
+        vm.frameCount = 0;
+        vm.openUpvalues = null;
     }
 
     pub fn runtimeError(vm: *VM, comptime fmt: []const u8, args: anytype) void {
@@ -127,10 +131,10 @@ pub const VM = struct {
         var parser = try Parser.init(vm);
         defer parser.deinit();
 
-        var fn_obj = try parser.compile(input);
+        const fn_obj = try parser.compile(input);
 
         vm.push(Value{ .object = fn_obj });
-        var closure = try zlox.newClosure(vm, fn_obj);
+        const closure = try zlox.newClosure(vm, fn_obj);
         _ = vm.pop();
         vm.push(Value{ .object = closure });
         try vm.call(closure, 0);
@@ -259,7 +263,7 @@ pub const VM = struct {
                 try vm.callValue(vm.peek(argc), argc);
             },
             .OP_CLOSURE => {
-                var fn_obj: *Object = vm.readConstant().object;
+                const fn_obj: *Object = vm.readConstant().object;
                 var obj_closure = try zlox.newClosure(vm, fn_obj);
                 vm.push(Value{ .object = obj_closure });
 
@@ -277,8 +281,13 @@ pub const VM = struct {
                     closure.upvalues.appendAssumeCapacity(upvalue);
                 }
             },
+            .OP_CLOSE_UPVALUE => {
+                vm.closeUpvalues(&vm.stack[vm.stackTop - 1]);
+                _ = vm.pop();
+            },
             .OP_RETURN => {
-                var result = vm.pop();
+                const result = vm.pop();
+                vm.closeUpvalues(&vm.currentFrame().slots[0]);
                 vm.frameCount -= 1;
                 if (vm.frameCount == 0) {
                     _ = vm.pop();
@@ -430,17 +439,29 @@ pub const VM = struct {
         _ = vm.pop();
     }
 
+    fn closeUpvalues(vm: *VM, last: *Value) void {
+        while (vm.openUpvalues) |open_upv| {
+            if (@intFromPtr(open_upv.upvalue.location) < @intFromPtr(last)) break;
+
+            // Hoist the (up)value onto the heap
+            var upvalue: *Object = open_upv;
+            upvalue.upvalue.closed = upvalue.upvalue.location.*;
+            upvalue.upvalue.location = &upvalue.upvalue.closed;
+            vm.openUpvalues = upvalue.upvalue.next;
+        }
+    }
+
     /// Concatenate two strings on top of the stack
     fn concatenate(vm: *VM) !void {
-        var val_b = vm.pop();
-        var val_a = vm.pop();
+        const val_b = vm.pop();
+        const val_a = vm.pop();
 
         const b: []const u8 = val_b.object.string;
         const a: []const u8 = val_a.object.string;
         const c = try std.mem.concat(vm.alloc, u8, &[_][]const u8{ a, b });
 
         // Transfer ownership of the concatenated string to a new object
-        var obj = try zlox.takeString(vm, c);
+        const obj = try zlox.takeString(vm, c);
         const str = Value{ .object = obj };
 
         vm.push(str);
@@ -469,14 +490,14 @@ pub fn clockNative(vm: *VM, argc: u8, argv: []Value) zlox.Error!Value {
     _ = vm;
     _ = argc;
     _ = argv;
-    var micros: f64 = @floatFromInt(std.time.microTimestamp());
+    const micros: f64 = @floatFromInt(std.time.microTimestamp());
     return Value{ .number = micros / 1e6 };
 }
 
 pub fn strBuiltin(vm: *VM, argc: u8, argv: []Value) zlox.Error!Value {
     if (argc != 1) return NoneVal;
     const val = argv[0];
-    var str: []const u8 = switch (val) {
+    const str: []const u8 = switch (val) {
         .number => |num| try std.fmt.allocPrint(vm.alloc, "'{d:.3}'", .{num}),
         .bool => |b| try std.fmt.allocPrint(vm.alloc, "'{}'", .{b}),
         .none => try std.fmt.allocPrint(vm.alloc, "'none'", .{}),

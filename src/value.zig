@@ -80,6 +80,8 @@ pub const Closure = struct {
 
 pub const Upvalue = struct {
     location: *Value = undefined,
+    closed: Value = NoneVal,
+    next: ?*Object = null, // Pointer to the next Upvalue (as an Object)
 };
 
 pub const Error = error{
@@ -166,7 +168,7 @@ fn functionsEqual(a: *const Function, b: *const Function) bool {
 /// Allocate a new Object on the heap, adding it to our global objects list
 /// The object is created on the stack, but copied to the heap
 pub fn createObject(vm: *VM, obj: Object) !*Object {
-    var new_obj = try vm.alloc.create(Object);
+    const new_obj = try vm.alloc.create(Object);
     new_obj.* = obj;
     try vm.objects.append(new_obj);
     return vm.objects.getLast();
@@ -175,7 +177,7 @@ pub fn createObject(vm: *VM, obj: Object) !*Object {
 /// Allocate a new Object on the heap of type 'Function'
 /// Initializes the function's chunk using the VM's allocator
 pub fn newFunction(vm: *VM) !*Object {
-    var fun = Function{ .chunk = Chunk.init(vm.alloc) };
+    const fun = Function{ .chunk = Chunk.init(vm.alloc) };
     return try createObject(vm, Object{ .function = fun });
 }
 
@@ -198,7 +200,32 @@ pub fn newUpvalue(vm: *VM, ptr: *Value) !*Object {
 
 /// Capture a new Upvalue from a local Value
 pub fn captureUpvalue(vm: *VM, local: *Value) !*Object {
-    return try newUpvalue(vm, local);
+    var prevUpvalue: ?*Object = null;
+    var upvalue: ?*Object = vm.openUpvalues;
+    while (upvalue) |upv| {
+        // Check if the upvalue lives lower in the stack than the local
+        if (@intFromPtr(upv.upvalue.location) <= @intFromPtr(local)) break;
+
+        prevUpvalue = upvalue;
+        upvalue = upv.upvalue.next;
+    }
+
+    if (upvalue) |upv| {
+        if (@intFromPtr(upv.upvalue.location) == @intFromPtr(local))
+            return upv;
+    }
+
+    // Create a new Upvalue and insert it into the list
+    var new_upvalue: *Object = try newUpvalue(vm, local);
+    new_upvalue.upvalue.next = upvalue;
+
+    if (prevUpvalue) |*pupv| {
+        pupv.*.upvalue.next = new_upvalue;
+    } else {
+        vm.openUpvalues = new_upvalue;
+    }
+
+    return new_upvalue;
 }
 
 /// Allocate a new Object on the heap of type 'NativeFn'
@@ -214,7 +241,7 @@ pub fn createString(vm: *VM, str: []const u8) !*Object {
 
 /// Copy the given string into a new Object on the heap
 pub fn copyString(vm: *VM, str: []const u8) !*Object {
-    var copy = try vm.alloc.dupe(u8, str);
+    const copy = try vm.alloc.dupe(u8, str);
     return try createString(vm, copy);
 }
 

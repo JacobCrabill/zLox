@@ -70,7 +70,7 @@ pub fn Repl(comptime InStream: type, comptime OutStream: type) type {
 
         fn nextLine(self: *Self) !?[]const u8 {
             // TODO: deprecated: replace with an ArrayList writer
-            var line = (try self.input.readUntilDelimiterOrEofAlloc(
+            const line = (try self.input.readUntilDelimiterOrEofAlloc(
                 self.alloc,
                 '\n',
                 self.max_input_size,
